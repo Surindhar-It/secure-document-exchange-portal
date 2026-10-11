@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  securedocx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: securedocx-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=file:/app/prisma/dev.db
+      - JWT_SECRET=fortress-share-production-secret-replace-me-1029384756
+      - KMS_MASTER_KEY=fortress-kms-master-key-production-seed-98234120984124981
+      - BLOCKCHAIN_ENABLED=true
+      - BLOCKCHAIN_NETWORK=sepolia
+      - BLOCKCHAIN_RPC_URL=https://rpc.sepolia.org
+      - SMART_CONTRACT_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3
+    volumes:
+      - app_data:/app/prisma
+      - storage_data:/app/storage
+
+volumes:
+  app_data:
+  storage_data:
