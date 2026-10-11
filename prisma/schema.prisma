@@ -1,0 +1,126 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String         @id @default(uuid())
+  email        String         @unique
+  passwordHash String
+  mfaSecret    String?
+  mfaEnabled   Boolean        @default(false)
+  publicKey    String?        // Base64 public key for user cryptographic operations
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  passkeys     Passkey[]
+  files        FileMetadata[]
+  shareLinks   ShareLink[]
+}
+
+model Passkey {
+  id           String @id
+  publicKey    String
+  counter      Int
+  userId       String
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+}
+
+model FileMetadata {
+  id          String      @id @default(uuid())
+  fileName    String      // Encrypted file name (base64/hex)
+  fileSize    Int         // Size of encrypted payload in bytes
+  mimeType    String      // MIME type of the file
+  storagePath String      // Local file path where encrypted file is stored
+  signature   String?     // Client-side SHA-256 integrity signature of ciphertext
+  originalHash String?    // SHA-256 integrity hash of original unencrypted file
+  encryptionAlgo String   @default("AES-256-GCM") // Versioned cryptographic algorithm
+  encryptionVersion String @default("1.0") // Cryptographic metadata version
+  iv          String?     // Initialization vector (hex/base64)
+  authTag     String?     // AES-GCM authentication tag
+  encryptedKeyPackage String? // KMS-wrapped DEK package (protected at rest)
+  ownerId          String
+  owner            User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt        DateTime          @default(now())
+  shareLinks       ShareLink[]
+  blockchainProofs BlockchainProof[]
+}
+
+model ShareLink {
+  id               String            @id // Unique identifier for download url (e.g. random token)
+  fileId           String
+  file             FileMetadata      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  ownerId          String
+  owner            User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  transferMode     String            @default("STANDARD") // "STANDARD" | "BLOCKCHAIN"
+  recipientEmail   String?           // Optional recipient binding (e.g. john@example.com)
+  status           String            @default("ACTIVE") // ACTIVE, ACCESSED, EXPIRED, REVOKED, FROZEN, BLOCKED
+  expiresAt        DateTime?
+  maxDownloads     Int?
+  downloadCount    Int               @default(0)
+  passwordHash     String?           // Optional hashed password to access sharing link
+  otpSecret        String?           // Optional OTP secret for access link verification
+  otpEnabled       Boolean           @default(false)
+  deviceRequired   Boolean           @default(false)
+  riskThreshold    Float?            @default(0.7)
+  allowedIps       String?           // Comma-separated list of IP CIDRs
+  allowedGeos      String?           // Comma-separated list of country codes (e.g., US, IN)
+  stegoEnabled     Boolean           @default(false) // Flag for optional image steganography carrier
+  stegoPayload     String?           // Protected verification payload embedded in carrier
+  isRevoked        Boolean           @default(false)
+  revokedAt        DateTime?
+  watermarkText    String?           // Optional watermark overlay text
+  createdAt        DateTime          @default(now())
+  blockchainProofs BlockchainProof[]
+}
+
+model BlockchainProof {
+  id              String        @id @default(uuid())
+  proofId         String        @unique // Canonical proof identifier (e.g. proof_123...)
+  shareLinkId     String?
+  shareLink       ShareLink?    @relation(fields: [shareLinkId], references: [id], onDelete: SetNull)
+  fileId          String?
+  file            FileMetadata? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  documentHash    String        // SHA-256 integrity hash of the encrypted file
+  eventHash       String        // SHA-256 hash of canonical event data
+  eventType       String        // DOCUMENT_REGISTERED, SHARE_CREATED, TRANSFER_STARTED, DOWNLOAD_COMPLETED, SHARE_REVOKED, HIGH_RISK_BLOCK
+  txHash          String?       // Blockchain transaction hash
+  blockNumber     Int?          // Blockchain block number
+  contractAddress String?       // Deployed smart contract address
+  network         String        @default("sepolia") // sepolia, hardhat, localhost, etc.
+  status          String        @default("PENDING") // PENDING, CONFIRMED, VERIFIED, FAILED
+  errorMessage    String?
+  timestamp       DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  index        Int      // Monotonically increasing sequence number
+  timestamp    DateTime @default(now())
+  action       String   // UPLOAD, DOWNLOAD, SHARE, REVOKE, LOGIN_FAIL, LOGIN_SUCCESS
+  userId       String?
+  userEmail    String?
+  ipAddress    String?
+  userAgent    String?
+  details      String?  // JSON stringified additional details
+  previousHash String   // Cryptographic link to previous block
+  hash         String   // SHA-256(index + timestamp + action + details + previousHash)
+}
+
+model SecurityThreat {
+  id          String   @id @default(uuid())
+  timestamp   DateTime @default(now())
+  ipAddress   String
+  userEmail   String?
+  action      String
+  threatType  String   // BRUTE_FORCE, GEO_ANOMALY, RATE_LIMIT_EXCEEDED, IP_BLACKLIST
+  riskScore   Float    // Risk score 0.0 - 1.0
+  confidence  Float    // ML model confidence 0.0 - 1.0
+  status      String   // OPEN, RESOLVED, IGNORED
+  details     String?  // Detailed diagnosis
+}
