@@ -58,10 +58,18 @@ export function maskEmail(email: string): string {
  * Create a configured Nodemailer transport
  */
 function createEmailTransporter() {
+  const service = process.env.SMTP_SERVICE; // e.g. "gmail"
   const host = process.env.SMTP_HOST;
   const port = parseInt(process.env.SMTP_PORT || "587");
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
+
+  if (service && user && pass) {
+    return nodemailer.createTransport({
+      service,
+      auth: { user, pass },
+    });
+  }
 
   if (host && user && pass) {
     return nodemailer.createTransport({
@@ -238,6 +246,10 @@ export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
   // Dispatch email
   const emailResult = await sendOTPEmail(recipientEmail, plainOtp, link.id);
 
+  if (!emailResult.success && !emailResult.simulated) {
+    throw new Error(`Email delivery failed: ${emailResult.error || "Unable to dispatch email via SMTP."}`);
+  }
+
   // Record audit log event (without recording plaintext OTP)
   await recordAuditEvent({
     action: "EMAIL_OTP_REQUESTED",
@@ -254,13 +266,15 @@ export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
 
   return {
     success: true,
-    message: "A verification code has been sent to your registered email address.",
+    message: emailResult.simulated
+      ? "Simulated Mode: SMTP is not configured in .env. Test OTP generated."
+      : "A verification code has been sent to your registered email address.",
     maskedEmail: maskEmail(recipientEmail),
     expiresAt: expiresAt.toISOString(),
     validitySeconds: OTP_VALIDITY_SECONDS,
     resendCooldown: RESEND_COOLDOWN_SECONDS,
-    // In simulated dev mode, pass simulated flag so developer UI can optionally display test hint
     simulated: emailResult.simulated,
+    devCode: emailResult.simulated && process.env.NODE_ENV !== "production" ? plainOtp : undefined,
   };
 }
 

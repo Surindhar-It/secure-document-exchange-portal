@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
       validitySeconds: result.validitySeconds,
       resendCooldown: result.resendCooldown,
       simulated: result.simulated,
+      devCode: result.devCode,
     });
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "Failed to generate security code.";

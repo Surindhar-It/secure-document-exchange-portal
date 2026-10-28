@@ -44,6 +44,10 @@ export default function EmailOtpVerificationCard({
   // Display masked email from props or from send response
   const [activeMaskedEmail, setActiveMaskedEmail] = useState<string>(maskedEmail || "your registered email");
 
+  // Simulation mode states (active when SMTP is not configured in .env)
+  const [isSimulated, setIsSimulated] = useState(false);
+  const [devCode, setDevCode] = useState<string | null>(null);
+
   // Synchronize masked email when prop updates
   useEffect(() => {
     if (maskedEmail) {
@@ -108,6 +112,8 @@ export default function EmailOtpVerificationCard({
       }
 
       setHasRequested(true);
+      setIsSimulated(!!data.simulated);
+      setDevCode(data.devCode || null);
       if (data.maskedEmail) {
         setActiveMaskedEmail(data.maskedEmail);
       }
@@ -323,6 +329,34 @@ export default function EmailOtpVerificationCard({
       ) : (
         /* OTP Verification Form */
         <div className="space-y-4 pt-1">
+          {/* Simulation mode helper banner (displayed when SMTP is not configured in .env) */}
+          {isSimulated && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl space-y-1.5 text-xs font-mono">
+              <div className="flex items-center gap-1.5 text-amber-400 font-bold">
+                <AlertOctagon className="w-3.5 h-3.5" />
+                <span>Simulated Mode (SMTP Server Not Configured)</span>
+              </div>
+              <p className="text-[10px] text-text-secondary leading-normal">
+                No SMTP credentials are configured in <code className="text-amber-300">.env</code>. Real emails require SMTP settings (Gmail App Password, Brevo, Resend, etc.).
+              </p>
+              {devCode && (
+                <div className="flex items-center justify-between p-2 bg-cyber-dark rounded border border-border-primary mt-1">
+                  <span className="text-[10px] text-text-secondary">Simulated Test OTP:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const arr = devCode.split("");
+                      setDigits(arr);
+                    }}
+                    className="text-xs text-amber-400 font-bold bg-amber-500/15 hover:bg-amber-500/25 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                  >
+                    {devCode} (Click to Fill)
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Segmented 6-digit Inputs */}
           <div>
             <div className="flex items-center justify-between mb-2 text-[10px] text-text-secondary">
