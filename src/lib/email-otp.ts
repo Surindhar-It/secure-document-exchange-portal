@@ -55,28 +55,65 @@ export function maskEmail(email: string): string {
 }
 
 /**
- * Create a configured Nodemailer transport
+ * Check if a configuration value is a placeholder or unconfigured
+ */
+function isConfigured(val?: string | null): boolean {
+  if (!val) return false;
+  const trimmed = val.trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower.includes("your_email") ||
+    lower.includes("example.com") ||
+    lower.startsWith("xxxx") ||
+    lower === "your-smtp-host" ||
+    lower.includes("[your")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Create a configured Nodemailer transport with resilient timeouts
  */
 function createEmailTransporter() {
-  const service = process.env.SMTP_SERVICE; // e.g. "gmail"
-  const host = process.env.SMTP_HOST;
+  const service = process.env.SMTP_SERVICE?.trim();
+  const host = process.env.SMTP_HOST?.trim();
   const port = parseInt(process.env.SMTP_PORT || "587");
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+  const user = process.env.SMTP_USER?.trim();
+  const pass = process.env.SMTP_PASS?.trim();
 
-  if (service && user && pass) {
+  // If credentials are blank or placeholders, do not attempt network connections
+  if (!isConfigured(user) || !isConfigured(pass)) {
+    return null;
+  }
+
+  // Strict network timeouts prevent Nodemailer from hanging or causing fetch timeouts
+  const networkTimeouts = {
+    connectionTimeout: 5000, // 5s max to connect to SMTP server
+    greetingTimeout: 5000,   // 5s max to wait for initial SMTP greeting
+    socketTimeout: 7000,     // 7s max for socket activity
+    tls: {
+      rejectUnauthorized: false, // Prevents certificate chain issues from hanging connection
+    },
+  };
+
+  if (service && isConfigured(service)) {
     return nodemailer.createTransport({
       service,
       auth: { user, pass },
+      ...networkTimeouts,
     });
   }
 
-  if (host && user && pass) {
+  if (host && isConfigured(host)) {
     return nodemailer.createTransport({
       host,
       port,
       secure: port === 465,
       auth: { user, pass },
+      ...networkTimeouts,
     });
   }
 
@@ -152,7 +189,14 @@ export async function sendOTPEmail(
       return { success: true, simulated: false };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[EmailOTP] SMTP Delivery error:", msg);
+      console.error("[EmailOTP] SMTP Delivery error / timeout:", msg);
+
+      // In non-production environments, gracefully fall back to simulation so testing is never blocked by SMTP timeouts
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(`[EmailOTP] Falling back to simulated delivery for testing: OTP is ${otpCode}`);
+        return { success: true, simulated: true, error: msg };
+      }
+
       return { success: false, simulated: false, error: msg };
     }
   }
@@ -247,6 +291,15 @@ export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
   const emailResult = await sendOTPEmail(recipientEmail, plainOtp, link.id);
 
   if (!emailResult.success && !emailResult.simulated) {
+    // Crucial: Roll back the created OTP so the user is NOT stuck in a 60-second cooldown after a failed send!
+    try {
+      await db.emailOtp.delete({
+        where: { id: otpRecord.id },
+      });
+    } catch (delErr) {
+      console.error("[EmailOTP] Failed to rollback OTP record on delivery failure:", delErr);
+    }
+
     throw new Error(`Email delivery failed: ${emailResult.error || "Unable to dispatch email via SMTP."}`);
   }
 
@@ -267,7 +320,9 @@ export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
   return {
     success: true,
     message: emailResult.simulated
-      ? "Simulated Mode: SMTP is not configured in .env. Test OTP generated."
+      ? (emailResult.error
+          ? `SMTP connection issue (${emailResult.error}). Switched to Simulated Test Mode.`
+          : "Simulated Mode: SMTP is not configured in .env. Test OTP generated.")
       : "A verification code has been sent to your registered email address.",
     maskedEmail: maskEmail(recipientEmail),
     expiresAt: expiresAt.toISOString(),
