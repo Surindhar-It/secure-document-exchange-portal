@@ -247,6 +247,19 @@ export default function DownloadPortalPage() {
   const [simulatedOtp, setSimulatedOtp] = useState("");
   const [simulatedOtpInfo, setSimulatedOtpInfo] = useState("");
 
+  // Multi-file bundle state (up to 20 files per link)
+  const [filesList, setFilesList] = useState<any[]>([]);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+
+  // Dual-Layer Integrity verification state (Encrypted Ciphertext Check & Decrypted Plaintext Check)
+  const [computedCiphertextHash, setComputedCiphertextHash] = useState<string | null>(null);
+  const [expectedCiphertextHash, setExpectedCiphertextHash] = useState<string | null>(null);
+  const [ciphertextVerified, setCiphertextVerified] = useState<boolean | null>(null);
+
+  const [computedPlaintextHash, setComputedPlaintextHash] = useState<string | null>(null);
+  const [expectedPlaintextHash, setExpectedPlaintextHash] = useState<string | null>(null);
+  const [plaintextVerified, setPlaintextVerified] = useState<boolean | null>(null);
+
   // Decryption progress state
   const [decryptProgress, setDecryptProgress] = useState(0);
   const [decryptStatus, setDecryptStatus] = useState("");
@@ -299,13 +312,20 @@ export default function DownloadPortalPage() {
       setBlockchainProof(data.blockchainProof || null);
       setHasRecipientBinding(!!data.hasRecipientBinding);
 
+      const resolvedFiles = data.files && data.files.length > 0 ? data.files : (data.file ? [data.file] : []);
+      setFilesList(resolvedFiles);
+      if (resolvedFiles.length > 0) {
+        setSelectedFileId(resolvedFiles[0].id);
+      }
+
       if (data.hasGeoRestriction) {
         setHasGeoRestriction(true);
         setPhase("country-select");
       } else {
-        setFileNameEnc(data.file?.fileName || "");
-        setFileSize(data.file?.fileSize || null);
-        setMimeType(data.file?.mimeType || "");
+        const primary = resolvedFiles[0] || data.file;
+        setFileNameEnc(primary?.fileName || "");
+        setFileSize(primary?.fileSize || null);
+        setMimeType(primary?.mimeType || "");
         setPasswordRequired(data.passwordRequired);
         setOtpRequired(data.otpRequired);
         setWatermarkText(data.watermarkText || "");
@@ -342,9 +362,17 @@ export default function DownloadPortalPage() {
       setTransferMode(data.transferMode || "STANDARD");
       setBlockchainProof(data.blockchainProof || null);
       setHasRecipientBinding(!!data.hasRecipientBinding);
-      setFileNameEnc(data.file?.fileName || "");
-      setFileSize(data.file?.fileSize || null);
-      setMimeType(data.file?.mimeType || "");
+
+      const resolvedFiles = data.files && data.files.length > 0 ? data.files : (data.file ? [data.file] : []);
+      setFilesList(resolvedFiles);
+      if (resolvedFiles.length > 0) {
+        setSelectedFileId(resolvedFiles[0].id);
+      }
+
+      const primary = resolvedFiles[0] || data.file;
+      setFileNameEnc(primary?.fileName || "");
+      setFileSize(primary?.fileSize || null);
+      setMimeType(primary?.mimeType || "");
       setPasswordRequired(data.passwordRequired);
       setOtpRequired(data.otpRequired);
       setWatermarkText(data.watermarkText || "");
@@ -374,9 +402,127 @@ export default function DownloadPortalPage() {
     }
   };
 
-  // Download & decrypt
-  const handleDownloadAndDecrypt = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Helper to execute download and verify dual-hashes (ciphertext & plaintext)
+  const executeDownloadAndVerify = async (targetFileId?: string) => {
+    setDecryptStep(1);
+    setDecryptProgress(15);
+    setDecryptStatus("Verifying policy criteria with AccessPolicyEngine...");
+
+    setDecryptStep(2);
+    setDecryptProgress(35);
+    setDecryptStatus("Atomic download authorization confirmed. Streaming ciphertext blocks...");
+
+    const res = await fetch("/api/share/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: linkId,
+        fileId: targetFileId || selectedFileId || undefined,
+        password: passwordInput || null,
+        otpCode: otpInput || null,
+        geo: selectedCountry?.code || "XX",
+        email: claimedEmailInput || null,
+      }),
+    });
+
+    const contentType = res.headers.get("Content-Type");
+    if (!res.ok || contentType?.includes("application/json")) {
+      const errorData = await res.json();
+      throw new Error(errorData.error || "Access validation denied by server policy");
+    }
+
+    // Read KMS-released key and hashes from authorized response headers
+    const kmsReleasedKey = res.headers.get("x-payload-key");
+    const expectedCipherHash = res.headers.get("x-ciphertext-hash");
+    const expectedOrigHash = res.headers.get("x-original-hash");
+    const headerFileName = res.headers.get("x-file-name");
+    const activeDecryptionKey = kmsReleasedKey || hexKey;
+
+    if (!activeDecryptionKey) {
+      throw new Error("Decryption key missing. Provide key token or ensure KMS envelope is configured.");
+    }
+
+    const combinedBuffer = await res.arrayBuffer();
+
+    // STEP 1: VERIFY ENCRYPTED VALUE (CIPHERTEXT INTEGRITY CHECK)
+    setDecryptProgress(55);
+    setDecryptStatus("Step 1/2: Cryptographically verifying encrypted ciphertext hash (checking for storage/transit tampering)...");
+    const computedCipher = await computeSHA256Buffer(combinedBuffer);
+    setComputedCiphertextHash(computedCipher);
+    setExpectedCiphertextHash(expectedCipherHash);
+
+    if (expectedCipherHash && expectedCipherHash.toLowerCase() !== computedCipher.toLowerCase()) {
+      setCiphertextVerified(false);
+      throw new Error(
+        `CRITICAL TAMPER DETECTED: Ciphertext SHA-256 hash does not match stored signature!\n` +
+        `Computed: ${computedCipher}\n` +
+        `Expected: ${expectedCipherHash}\n` +
+        `Encrypted payload was altered or corrupted in storage. Halting decryption.`
+      );
+    }
+    setCiphertextVerified(true);
+
+    // STEP 2: DECRYPT WITH WEB CRYPTO (AES-256-GCM)
+    setDecryptProgress(75);
+    setDecryptStatus(
+      transferMode === "BLOCKCHAIN"
+        ? "Ciphertext verified untampered. Decrypting payload locally with Web Crypto (AES-256-GCM)..."
+        : "Ciphertext verified untampered. Decrypting payload locally with Web Crypto (AES-256-GCM)..."
+    );
+    setDecryptStep(3);
+
+    const plaintextBuffer = await decryptFileBuffer(combinedBuffer, activeDecryptionKey);
+
+    // STEP 3: VERIFY DECRYPTED VALUE (PLAINTEXT INTEGRITY CHECK)
+    setDecryptProgress(90);
+    setDecryptStatus("Step 2/2: Verifying SHA-256 decrypted content against original upload signature...");
+    const computedPlain = await computeSHA256Buffer(plaintextBuffer);
+    setComputedPlaintextHash(computedPlain);
+    setExpectedPlaintextHash(expectedOrigHash);
+
+    if (expectedOrigHash && expectedOrigHash.toLowerCase() !== computedPlain.toLowerCase()) {
+      setPlaintextVerified(false);
+      throw new Error(
+        `CRITICAL INTEGRITY MISMATCH: Decrypted document hash does not match original unencrypted document!\n` +
+        `Computed: ${computedPlain}\n` +
+        `Expected: ${expectedOrigHash}\n` +
+        `Document display halted due to integrity mismatch.`
+      );
+    }
+    setPlaintextVerified(true);
+
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Resolve file name
+    const currentFile = filesList.find((f) => f.id === (targetFileId || selectedFileId)) || filesList[0];
+    let originalName = "decrypted_file";
+    const encName = headerFileName || currentFile?.fileName || fileNameEnc;
+    if (encName) {
+      try {
+        originalName = window.atob(encName);
+      } catch {
+        originalName = encName;
+      }
+    }
+
+    setDecryptProgress(100);
+    setDecryptStatus("Zero-Tampering Confirmed: Encrypted ciphertext and decrypted original plaintext both verified untampered!");
+    setDecryptStep(4);
+
+    const blob = new Blob([plaintextBuffer], { type: currentFile?.mimeType || mimeType });
+    const downloadUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.setAttribute("download", originalName);
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(downloadUrl);
+  };
+
+  // Download & decrypt single or active file
+  const handleDownloadAndDecrypt = async (e?: React.FormEvent, targetFileId?: string) => {
+    if (e) e.preventDefault();
     setErrorMsg("");
 
     if (hasRecipientBinding && !claimedEmailInput) {
@@ -385,86 +531,41 @@ export default function DownloadPortalPage() {
     }
 
     try {
-      setDecryptStep(1);
-      setDecryptProgress(20);
-      setDecryptStatus("Verifying policy criteria with AccessPolicyEngine...");
-
-      setDecryptStep(2);
-      setDecryptProgress(40);
-      setDecryptStatus("Atomic download authorization confirmed. Streaming ciphertext blocks...");
-
-      const res = await fetch("/api/share/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: linkId,
-          password: passwordInput || null,
-          otpCode: otpInput || null,
-          geo: selectedCountry?.code || "XX",
-          email: claimedEmailInput || null,
-        }),
-      });
-
-      const contentType = res.headers.get("Content-Type");
-      if (!res.ok || contentType?.includes("application/json")) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || "Access validation denied by server policy");
-      }
-
-      // Read KMS-released key and original hash from authorized headers
-      const kmsReleasedKey = res.headers.get("x-payload-key");
-      const expectedOrigHash = res.headers.get("x-original-hash");
-      const activeDecryptionKey = kmsReleasedKey || hexKey;
-
-      if (!activeDecryptionKey) {
-        throw new Error("Decryption key missing. Provide key token or ensure KMS envelope is configured.");
-      }
-
-      setDecryptProgress(70);
-      setDecryptStatus(
-        transferMode === "BLOCKCHAIN"
-          ? "Blockchain audit logged. Decrypting payload locally with Web Crypto (AES-256-GCM)..."
-          : "Standard transfer verified. Decrypting payload locally with Web Crypto (AES-256-GCM)..."
-      );
-      setDecryptStep(3);
-
-      const combinedBuffer = await res.arrayBuffer();
-      const plaintextBuffer = await decryptFileBuffer(combinedBuffer, activeDecryptionKey);
-
-      setDecryptProgress(90);
-      setDecryptStatus("Verifying SHA-256 payload integrity signature...");
-
-      // Compute and verify SHA-256 hash
-      const computedHash = await computeSHA256Buffer(plaintextBuffer);
-      if (expectedOrigHash && expectedOrigHash.toLowerCase() !== computedHash.toLowerCase()) {
-        throw new Error("CRITICAL INTEGRITY MISMATCH! Computed document hash does not match original signature.");
-      }
-
-      await new Promise((r) => setTimeout(r, 400));
-
-      let originalName = "decrypted_file";
-      try {
-        originalName = window.atob(fileNameEnc);
-      } catch {}
-
-      setDecryptProgress(100);
-      setDecryptStatus("Document reconstructed successfully.");
-      setDecryptStep(4);
-
-      const blob = new Blob([plaintextBuffer], { type: mimeType });
-      const downloadUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = downloadUrl;
-      anchor.setAttribute("download", originalName);
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
+      await executeDownloadAndVerify(targetFileId);
     } catch (err) {
       console.error(err);
       setDecryptStep(0);
       setDecryptProgress(0);
       setDecryptStatus("");
       setErrorMsg(err instanceof Error ? err.message : "Decryption failed. Ensure the key fragment is correct and unchanged.");
+    }
+  };
+
+  // Download and verify all files in bundle sequentially
+  const handleDownloadAllBundleFiles = async () => {
+    if (!filesList.length) return;
+    setErrorMsg("");
+
+    if (hasRecipientBinding && !claimedEmailInput) {
+      setErrorMsg("Please enter your designated recipient email address to proceed.");
+      return;
+    }
+
+    try {
+      for (let i = 0; i < filesList.length; i++) {
+        const file = filesList[i];
+        setSelectedFileId(file.id);
+        setDecryptStatus(`Recovering and verifying file ${i + 1} of ${filesList.length}...`);
+        await executeDownloadAndVerify(file.id);
+        await new Promise((r) => setTimeout(r, 600));
+      }
+      setDecryptStatus(`All ${filesList.length} files successfully verified and downloaded.`);
+    } catch (err) {
+      console.error(err);
+      setDecryptStep(0);
+      setDecryptProgress(0);
+      setDecryptStatus("");
+      setErrorMsg(err instanceof Error ? err.message : "Batch download failed.");
     }
   };
 
@@ -706,22 +807,87 @@ export default function DownloadPortalPage() {
               </div>
             )}
 
-            {/* File info card */}
-            <div className="p-4 bg-cyber-dark/70 border border-border-primary rounded-xl flex items-center gap-4">
-              <div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400">
-                <HardDrive className="w-5 h-5" />
-              </div>
-              <div className="space-y-1 font-mono text-xs truncate">
-                <div className="font-bold text-text-primary truncate max-w-[240px]">
-                  {fileNameEnc
-                    ? (() => {
-                        try { return window.atob(fileNameEnc); } catch { return "payload.enc"; }
-                      })()
-                    : "encrypted_payload.enc"}
+            {/* Multi-File Bundle Document List (when bundle contains multiple documents) */}
+            {filesList.length > 1 ? (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-widest">
+                    Transfer Bundle ({filesList.length} Documents, Max 20)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleDownloadAllBundleFiles}
+                    disabled={decryptStep > 0 && decryptStep < 4}
+                    className="text-[9px] font-mono text-indigo-400 hover:underline cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                  >
+                    <Download className="w-3 h-3" />
+                    Download All
+                  </button>
                 </div>
-                <div className="text-text-secondary text-[10px]">{formatBytes(fileSize)}</div>
+
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {filesList.map((file, idx) => {
+                    let dName = `document_${idx + 1}.bin`;
+                    try {
+                      dName = window.atob(file.fileName);
+                    } catch {
+                      dName = file.fileName;
+                    }
+                    const isSelected = (selectedFileId || filesList[0]?.id) === file.id;
+
+                    return (
+                      <div
+                        key={file.id}
+                        onClick={() => setSelectedFileId(file.id)}
+                        className={`p-2.5 rounded-xl border font-mono text-xs cursor-pointer transition-all flex items-center justify-between gap-2.5 ${
+                          isSelected
+                            ? "bg-indigo-600/15 border-indigo-500 text-text-primary"
+                            : "bg-cyber-dark/80 border-border-primary text-text-secondary hover:border-indigo-500/30"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <HardDrive className={`w-3.5 h-3.5 shrink-0 ${isSelected ? "text-indigo-400" : "text-text-secondary"}`} />
+                          <div className="truncate">
+                            <span className="font-bold text-text-primary block truncate max-w-[190px]">{dName}</span>
+                            <span className="text-[9px] text-text-secondary">{formatBytes(file.fileSize)}</span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedFileId(file.id);
+                            handleDownloadAndDecrypt(undefined, file.id);
+                          }}
+                          disabled={decryptStep > 0 && decryptStep < 4}
+                          className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[9px] font-bold cursor-pointer shrink-0"
+                        >
+                          Recover
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            ) : (
+              /* Single File Info Card */
+              <div className="p-4 bg-cyber-dark/70 border border-border-primary rounded-xl flex items-center gap-4">
+                <div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                  <HardDrive className="w-5 h-5" />
+                </div>
+                <div className="space-y-1 font-mono text-xs truncate">
+                  <div className="font-bold text-text-primary truncate max-w-[240px]">
+                    {fileNameEnc
+                      ? (() => {
+                          try { return window.atob(fileNameEnc); } catch { return "payload.enc"; }
+                        })()
+                      : "encrypted_payload.enc"}
+                  </div>
+                  <div className="text-text-secondary text-[10px]">{formatBytes(fileSize)}</div>
+                </div>
+              </div>
+            )}
 
             {/* Recipient Binding Identity Challenge */}
             {hasRecipientBinding && (
@@ -815,7 +981,7 @@ export default function DownloadPortalPage() {
               )}
             </div>
 
-            {/* Progress HUD */}
+            {/* Dual Integrity Verification Status & Progress HUD */}
             {decryptStep > 0 && (
               <div className="glass-panel p-4 rounded-xl border-indigo-500/25 space-y-3 font-mono text-[10px]">
                 <div className="flex justify-between text-text-secondary">
@@ -828,6 +994,39 @@ export default function DownloadPortalPage() {
                     className="bg-indigo-500 h-full rounded-full transition-all duration-300"
                   />
                 </div>
+
+                {/* Dual verification telemetry indicators */}
+                <div className="pt-2 border-t border-border-primary/50 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-secondary">1. Encrypted Ciphertext Hash:</span>
+                    {ciphertextVerified === true ? (
+                      <span className="text-emerald-400 font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> MATCH / UNTAMPERED
+                      </span>
+                    ) : ciphertextVerified === false ? (
+                      <span className="text-rose-400 font-bold flex items-center gap-1">
+                        <AlertOctagon className="w-3 h-3" /> MODIFIED
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">PENDING CHECK</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-secondary">2. Decrypted Document Hash:</span>
+                    {plaintextVerified === true ? (
+                      <span className="text-emerald-400 font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> MATCH / ORIGINAL
+                      </span>
+                    ) : plaintextVerified === false ? (
+                      <span className="text-rose-400 font-bold flex items-center gap-1">
+                        <AlertOctagon className="w-3 h-3" /> MISMATCH
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">PENDING CHECK</span>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -836,7 +1035,10 @@ export default function DownloadPortalPage() {
               disabled={decryptStep > 0 && decryptStep < 4}
               className="w-full py-4 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-xs font-mono flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-indigo-500/5 transition-all"
             >
-              <Download className="w-4 h-4" /> Download Cipher & Decrypt Locally
+              <Download className="w-4 h-4" />
+              {filesList.length > 1
+                ? "Download & Verify Selected Document"
+                : "Download Cipher & Decrypt Locally"}
             </button>
           </form>
         )}

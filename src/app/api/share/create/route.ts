@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       fileId,
+      fileIds,
       transferMode = "STANDARD", // "STANDARD" | "BLOCKCHAIN"
       recipientEmail,
       expiresAt,
@@ -32,18 +33,49 @@ export async function POST(req: NextRequest) {
       stegoEnabled = false,
     } = body;
 
-    if (!fileId) {
-      return NextResponse.json({ error: "File ID is required" }, { status: 400 });
+    // Support both single fileId and multiple fileIds (up to 20 files per link)
+    let selectedFileIds: string[] = [];
+    if (Array.isArray(fileIds) && fileIds.length > 0) {
+      selectedFileIds = fileIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+    } else if (fileId && typeof fileId === "string") {
+      selectedFileIds = [fileId.trim()];
     }
 
-    // Verify file ownership
-    const file = await db.fileMetadata.findFirst({
-      where: { id: fileId, ownerId: sessionUser.id },
+    if (selectedFileIds.length === 0) {
+      return NextResponse.json({ error: "At least one document must be selected for sharing." }, { status: 400 });
+    }
+
+    if (selectedFileIds.length > 20) {
+      return NextResponse.json(
+        { error: `A single transfer link can contain a maximum of 20 files. You selected ${selectedFileIds.length}.` },
+        { status: 400 }
+      );
+    }
+
+    // Deduplicate
+    selectedFileIds = Array.from(new Set(selectedFileIds));
+
+    // Verify ownership of all selected files
+    const userFiles = await db.fileMetadata.findMany({
+      where: {
+        id: { in: selectedFileIds },
+        ownerId: sessionUser.id,
+      },
     });
 
-    if (!file) {
-      return NextResponse.json({ error: "File not found or unauthorized" }, { status: 404 });
+    if (userFiles.length !== selectedFileIds.length) {
+      return NextResponse.json(
+        { error: "One or more selected files could not be found or you do not have permission to share them." },
+        { status: 404 }
+      );
     }
+
+    // Maintain the order in which user selected the files
+    const orderedFiles = selectedFileIds
+      .map((id) => userFiles.find((f) => f.id === id)!)
+      .filter(Boolean);
+
+    const primaryFile = orderedFiles[0];
 
     // Generate a random high-entropy sharing link ID (12 character URL-safe Base58 string)
     const shareLinkId = crypto.randomBytes(9).toString("base64")
@@ -64,16 +96,26 @@ export async function POST(req: NextRequest) {
       otpSecret = crypto.randomBytes(20).toString("hex");
     }
 
-    // Calculate or retrieve Document Integrity Hash (SHA-256 of encrypted file payload)
-    let documentHash = file.signature;
-    if (!documentHash && fs.existsSync(file.storagePath)) {
-      const fileBytes = fs.readFileSync(file.storagePath);
-      documentHash = crypto.createHash("sha256").update(fileBytes).digest("hex");
-      // Persist signature to file record if not previously cached
-      await db.fileMetadata.update({
-        where: { id: file.id },
-        data: { signature: documentHash },
-      });
+    // Calculate or retrieve Document Integrity Hash for all files
+    for (const f of orderedFiles) {
+      if (!f.signature && fs.existsSync(f.storagePath)) {
+        const fileBytes = fs.readFileSync(f.storagePath);
+        const hash = crypto.createHash("sha256").update(fileBytes).digest("hex");
+        f.signature = hash;
+        await db.fileMetadata.update({
+          where: { id: f.id },
+          data: { signature: hash },
+        });
+      }
+    }
+
+    // Composite hash representing the bundle integrity
+    let compositeDocumentHash: string;
+    if (orderedFiles.length === 1) {
+      compositeDocumentHash = orderedFiles[0].signature || "pending";
+    } else {
+      const bundleSignatures = orderedFiles.map((f) => f.signature || f.id).join(":");
+      compositeDocumentHash = crypto.createHash("sha256").update(bundleSignatures).digest("hex");
     }
 
     // Generate protected Steganography verification token if enabled
@@ -81,19 +123,20 @@ export async function POST(req: NextRequest) {
     if (stegoEnabled) {
       stegoPayload = JSON.stringify({
         type: "SECUREDOCX_STEGO_TOKEN",
-        version: "1.0",
+        version: "2.0",
         shareId: shareLinkId,
+        fileCount: orderedFiles.length,
         mode: transferMode === "BLOCKCHAIN" ? "BLOCKCHAIN" : "STANDARD",
-        documentHash: documentHash || file.signature || "pending",
+        documentHash: compositeDocumentHash,
         issuedAt: Date.now(),
       });
     }
 
-    // Create share record
+    // Create share record with join model ShareLinkFile
     const shareLink = await db.shareLink.create({
       data: {
         id: shareLinkId,
-        fileId,
+        fileId: primaryFile.id,
         ownerId: sessionUser.id,
         transferMode: transferMode === "BLOCKCHAIN" ? "BLOCKCHAIN" : "STANDARD",
         recipientEmail: recipientEmail ? recipientEmail.trim().toLowerCase() : null,
@@ -108,6 +151,18 @@ export async function POST(req: NextRequest) {
         stegoEnabled: !!stegoEnabled,
         stegoPayload,
         watermarkText: watermarkText || null,
+        files: {
+          create: orderedFiles.map((f, idx) => ({
+            fileId: f.id,
+            order: idx,
+          })),
+        },
+      },
+      include: {
+        files: {
+          include: { file: true },
+          orderBy: { order: "asc" },
+        },
       },
     });
 
@@ -121,10 +176,12 @@ export async function POST(req: NextRequest) {
       transferMode: shareLink.transferMode as "STANDARD" | "BLOCKCHAIN",
       shareLinkId: shareLink.id,
       fileId: shareLink.fileId,
-      documentHash: documentHash || undefined,
+      documentHash: compositeDocumentHash,
       details: {
         shareLinkId: shareLink.id,
-        fileId: shareLink.fileId,
+        primaryFileId: shareLink.fileId,
+        fileCount: orderedFiles.length,
+        fileIds: selectedFileIds,
         transferMode: shareLink.transferMode,
         recipientEmail: shareLink.recipientEmail,
         limits: {
@@ -149,6 +206,14 @@ export async function POST(req: NextRequest) {
       shareLink: {
         id: shareLink.id,
         fileId: shareLink.fileId,
+        files: shareLink.files.map((sf) => ({
+          id: sf.file.id,
+          fileName: sf.file.fileName,
+          fileSize: sf.file.fileSize,
+          mimeType: sf.file.mimeType,
+          signature: sf.file.signature,
+          originalHash: sf.file.originalHash,
+        })),
         transferMode: shareLink.transferMode,
         recipientEmail: shareLink.recipientEmail,
         status: shareLink.status,

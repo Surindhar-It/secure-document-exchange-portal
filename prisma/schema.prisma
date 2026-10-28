@@ -47,13 +47,15 @@ model FileMetadata {
   owner            User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   createdAt        DateTime          @default(now())
   shareLinks       ShareLink[]
+  shareLinkFiles   ShareLinkFile[]
   blockchainProofs BlockchainProof[]
 }
 
 model ShareLink {
   id               String            @id // Unique identifier for download url (e.g. random token)
-  fileId           String
-  file             FileMetadata      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  fileId           String?           // Primary file (legacy/single-file compatibility)
+  file             FileMetadata?     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  files            ShareLinkFile[]   // Multi-file bundle support (up to 20 files per link)
   ownerId          String
   owner            User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   transferMode     String            @default("STANDARD") // "STANDARD" | "BLOCKCHAIN"
@@ -76,6 +78,18 @@ model ShareLink {
   watermarkText    String?           // Optional watermark overlay text
   createdAt        DateTime          @default(now())
   blockchainProofs BlockchainProof[]
+}
+
+model ShareLinkFile {
+  id          String       @id @default(uuid())
+  shareLinkId String
+  shareLink   ShareLink    @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
+  fileId      String
+  file        FileMetadata @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  order       Int          @default(0)
+  createdAt   DateTime     @default(now())
+
+  @@unique([shareLinkId, fileId])
 }
 
 model BlockchainProof {

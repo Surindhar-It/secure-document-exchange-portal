@@ -32,7 +32,13 @@ export async function evaluateAccessPolicy(
 
   const link = await db.shareLink.findUnique({
     where: { id: linkId },
-    include: { file: true },
+    include: {
+      file: true,
+      files: {
+        include: { file: true },
+        orderBy: { order: "asc" },
+      },
+    },
   });
 
   if (!link) {

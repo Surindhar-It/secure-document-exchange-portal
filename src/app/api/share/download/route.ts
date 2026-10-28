@@ -21,7 +21,13 @@ export async function GET(req: NextRequest) {
   try {
     const link = await db.shareLink.findUnique({
       where: { id: linkId },
-      include: { file: true },
+      include: {
+        file: true,
+        files: {
+          include: { file: true },
+          orderBy: { order: "asc" },
+        },
+      },
     });
 
     if (!link || link.isRevoked || link.status === "REVOKED") {
@@ -72,6 +78,22 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // Resolve list of files in bundle
+    const allFiles = link.files && link.files.length > 0
+      ? link.files.map((sf) => sf.file)
+      : (link.file ? [link.file] : []);
+
+    const filesData = allFiles.map((f) => ({
+      id: f.id,
+      fileName: f.fileName,
+      fileSize: f.fileSize,
+      mimeType: f.mimeType,
+      encryptionAlgo: f.encryptionAlgo,
+      encryptionVersion: f.encryptionVersion,
+      signature: f.signature, // SHA-256 of encrypted ciphertext
+      originalHash: f.originalHash, // SHA-256 of original unencrypted document
+    }));
+
     // Return meta details
     return NextResponse.json({
       success: true,
@@ -83,19 +105,13 @@ export async function GET(req: NextRequest) {
       expiresAt: link.expiresAt,
       maxDownloads: link.maxDownloads,
       downloadCount: link.downloadCount,
+      fileCount: allFiles.length,
       // Expose file metadata only if geo restriction satisfied (or none required)
       ...(hasGeoRestriction && !simGeo
         ? {}
         : {
-            file: {
-              fileName: link.file.fileName,
-              fileSize: link.file.fileSize,
-              mimeType: link.file.mimeType,
-              encryptionAlgo: link.file.encryptionAlgo,
-              encryptionVersion: link.file.encryptionVersion,
-              signature: link.file.signature,
-              originalHash: link.file.originalHash,
-            },
+            files: filesData,
+            file: filesData[0] || null,
             stegoEnabled: link.stegoEnabled,
             passwordRequired: !!link.passwordHash,
             otpRequired: link.otpEnabled,
@@ -125,7 +141,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { id: linkId, password, otpCode, geo, email: claimedEmail } = body;
+    const { id: linkId, fileId, password, otpCode, geo, email: claimedEmail } = body;
 
     if (!linkId) {
       return NextResponse.json({ error: "Share Link ID is required" }, { status: 400 });
@@ -184,7 +200,30 @@ export async function POST(req: NextRequest) {
     }
 
     const link = policyResult.link;
-    const filePath = link.file.storagePath;
+
+    // Resolve target file from bundle or single file
+    const allFiles = (link.files && link.files.length > 0)
+      ? link.files.map((sf: any) => sf.file)
+      : (link.file ? [link.file] : []);
+
+    let targetFile = allFiles[0];
+    if (fileId) {
+      const found = allFiles.find((f: any) => f.id === fileId);
+      if (found) {
+        targetFile = found;
+      } else {
+        return NextResponse.json(
+          { error: "Requested document was not found in this transfer bundle." },
+          { status: 404 }
+        );
+      }
+    }
+
+    if (!targetFile) {
+      return NextResponse.json({ error: "No document attached to this transfer link." }, { status: 404 });
+    }
+
+    const filePath = targetFile.storagePath;
 
     if (!fs.existsSync(filePath)) {
       return NextResponse.json({ error: "Encrypted payload missing on server" }, { status: 404 });
@@ -199,12 +238,13 @@ export async function POST(req: NextRequest) {
       userAgent,
       transferMode: link.transferMode as "STANDARD" | "BLOCKCHAIN",
       shareLinkId: link.id,
-      fileId: link.fileId,
-      documentHash: link.file.signature,
+      fileId: targetFile.id,
+      documentHash: targetFile.signature,
       details: {
         shareLinkId: link.id,
-        fileId: link.fileId,
-        fileName: link.file.fileName,
+        fileId: targetFile.id,
+        fileName: targetFile.fileName,
+        bundleSize: allFiles.length,
         downloadCount: link.downloadCount + 1,
         transferMode: link.transferMode,
         riskScore: policyResult.riskAssessment.score,
@@ -215,7 +255,7 @@ export async function POST(req: NextRequest) {
     await evaluateAccessThreat({
       ipAddress: ip,
       action: "DOWNLOAD",
-      details: { fileSizeMb: link.file.fileSize / (1024 * 1024) },
+      details: { fileSizeMb: targetFile.fileSize / (1024 * 1024) },
     });
 
     // Read the encrypted file bytes
@@ -223,10 +263,10 @@ export async function POST(req: NextRequest) {
 
     // Safely unwrap Data Encryption Key (DEK) via KMS for authorized recipient
     let unwrappedDekHex: string | null = null;
-    if (link.file.encryptedKeyPackage) {
+    if (targetFile.encryptedKeyPackage) {
       try {
         const { unwrapDEK } = await import("@/lib/kms");
-        unwrappedDekHex = unwrapDEK(link.file.encryptedKeyPackage);
+        unwrappedDekHex = unwrapDEK(targetFile.encryptedKeyPackage);
       } catch (keyErr) {
         console.error("Failed to unwrap DEK during authorized download:", keyErr);
       }
@@ -237,12 +277,14 @@ export async function POST(req: NextRequest) {
       headers: {
         "Content-Type": "application/octet-stream",
         "Content-Length": fileBuffer.length.toString(),
-        "Access-Control-Expose-Headers": "x-payload-key, x-original-hash, x-ciphertext-hash, x-encryption-algo, x-encryption-version",
+        "Access-Control-Expose-Headers": "x-file-id, x-file-name, x-payload-key, x-original-hash, x-ciphertext-hash, x-encryption-algo, x-encryption-version",
+        "x-file-id": targetFile.id,
+        ...(targetFile.fileName ? { "x-file-name": targetFile.fileName } : {}),
         ...(unwrappedDekHex ? { "x-payload-key": unwrappedDekHex } : {}),
-        ...(link.file.originalHash ? { "x-original-hash": link.file.originalHash } : {}),
-        ...(link.file.signature ? { "x-ciphertext-hash": link.file.signature } : {}),
-        ...(link.file.encryptionAlgo ? { "x-encryption-algo": link.file.encryptionAlgo } : {}),
-        ...(link.file.encryptionVersion ? { "x-encryption-version": link.file.encryptionVersion } : {}),
+        ...(targetFile.originalHash ? { "x-original-hash": targetFile.originalHash } : {}),
+        ...(targetFile.signature ? { "x-ciphertext-hash": targetFile.signature } : {}),
+        ...(targetFile.encryptionAlgo ? { "x-encryption-algo": targetFile.encryptionAlgo } : {}),
+        ...(targetFile.encryptionVersion ? { "x-encryption-version": targetFile.encryptionVersion } : {}),
       },
     });
   } catch (error) {

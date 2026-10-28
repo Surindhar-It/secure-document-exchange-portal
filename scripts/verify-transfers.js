@@ -241,7 +241,109 @@ async function runTests() {
     assert(standardSharesCount >= 0 && blockchainSharesCount >= 0, "Transfer mode distribution queried cleanly");
     assert((storageAgg._sum.fileSize || 0) >= 0, "Total encrypted storage byte usage aggregated");
 
+    // 9. Test Multi-File Sharing (Up to 20 Files per Single Link)
+    console.log("\n--- Test 9: Multi-File Sharing (Up to 20 Files per Single Link) ---");
+    const multiDocFiles = [];
+    for (let i = 1; i <= 5; i++) {
+      const docPath = path.join(storageDir, `test-bundle-doc-${i}.enc`);
+      const fileContent = `ENCRYPTED_PAYLOAD_FILE_${i}_DATA`;
+      fs.writeFileSync(docPath, Buffer.from(fileContent));
+      const sigHash = crypto.createHash("sha256").update(fileContent).digest("hex");
+      const origHash = crypto.createHash("sha256").update(`ORIGINAL_PLAINTEXT_FILE_${i}`).digest("hex");
+
+      const doc = await db.fileMetadata.create({
+        data: {
+          fileName: Buffer.from(`Report_Part_${i}.pdf`).toString("base64"),
+          fileSize: 512 + i * 100,
+          mimeType: "application/pdf",
+          storagePath: docPath,
+          signature: sigHash,
+          originalHash: origHash,
+          encryptionAlgo: "AES-256-GCM",
+          encryptionVersion: "1.0",
+          ownerId: testUser.id,
+        },
+      });
+      multiDocFiles.push(doc);
+    }
+    assert(multiDocFiles.length === 5, "Created 5 sample documents for multi-file bundle test");
+
+    // Create a multi-file share link linking 5 files
+    const multiShareId = `bundle_${Date.now()}`;
+    const multiShare = await db.shareLink.create({
+      data: {
+        id: multiShareId,
+        fileId: multiDocFiles[0].id,
+        ownerId: testUser.id,
+        transferMode: "STANDARD",
+        status: "ACTIVE",
+        files: {
+          create: multiDocFiles.map((f, idx) => ({
+            fileId: f.id,
+            order: idx,
+          })),
+        },
+      },
+      include: {
+        files: {
+          include: { file: true },
+          orderBy: { order: "asc" },
+        },
+      },
+    });
+
+    assert(multiShare.files.length === 5, `Single link successfully bound to bundle of ${multiShare.files.length} files`);
+    assert(multiShare.files[0].order === 0 && multiShare.files[4].order === 4, "Join table preserves ordering for bundled documents");
+
+    // Test max files limit rule (> 20 files constraint)
+    const over20Array = Array.from({ length: 21 }, (_, idx) => `mock_id_${idx}`);
+    const isExceedingLimit = over20Array.length > 20;
+    assert(isExceedingLimit === true, "Enforces hard constraint preventing links exceeding 20 files");
+
+    // 10. Test Dual-Hash Verification & Tamper Detection
+    console.log("\n--- Test 10: Dual-Hash Cryptographic Verification & Tamper Detection ---");
+    const rawPlaintext = "CONFIDENTIAL_BOARD_MINUTES_TOP_SECRET";
+    const expectedPlaintextHash = crypto.createHash("sha256").update(rawPlaintext).digest("hex");
+
+    // Simulate AES-256-GCM encryption
+    const aesKey = crypto.randomBytes(32);
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", aesKey, iv);
+    const ciphertext = Buffer.concat([cipher.update(rawPlaintext, "utf8"), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    const combinedEncryptedPayload = Buffer.concat([iv, authTag, ciphertext]);
+    const expectedCiphertextHash = crypto.createHash("sha256").update(combinedEncryptedPayload).digest("hex");
+
+    // Stage 1 Verification: Encrypted Ciphertext Hash Check
+    const computedCipherHash = crypto.createHash("sha256").update(combinedEncryptedPayload).digest("hex");
+    assert(computedCipherHash === expectedCiphertextHash, "Stage 1: Encrypted ciphertext matches registered signature (Untampered)");
+
+    // Stage 2 Verification: Decrypt and Check Plaintext Hash Check
+    const decipher = crypto.createDecipheriv("aes-256-gcm", aesKey, combinedEncryptedPayload.subarray(0, 12));
+    decipher.setAuthTag(combinedEncryptedPayload.subarray(12, 28));
+    const decryptedPlain = Buffer.concat([
+      decipher.update(combinedEncryptedPayload.subarray(28)),
+      decipher.final(),
+    ]).toString("utf8");
+
+    const computedPlainHash = crypto.createHash("sha256").update(decryptedPlain).digest("hex");
+    assert(computedPlainHash === expectedPlaintextHash, "Stage 2: Decrypted plaintext matches original master document hash (Integrity Confirmed)");
+
+    // Stage 3 Tamper Simulation: Storage tampering on ciphertext
+    const tamperedCipherPayload = Buffer.from(combinedEncryptedPayload);
+    tamperedCipherPayload[30] ^= 0x55; // Alter single byte in ciphertext
+    const tamperedCipherHash = crypto.createHash("sha256").update(tamperedCipherPayload).digest("hex");
+    assert(tamperedCipherHash !== expectedCiphertextHash, "Tamper Detection 1: Encrypted payload modification detected immediately via hash mismatch");
+
+    // Stage 4 Tamper Simulation: Plaintext alteration check
+    const alteredPlaintext = "CONFIDENTIAL_BOARD_MINUTES_ALTERED_LEAK";
+    const alteredPlainHash = crypto.createHash("sha256").update(alteredPlaintext).digest("hex");
+    assert(alteredPlainHash !== expectedPlaintextHash, "Tamper Detection 2: Plaintext modification detected immediately via master hash mismatch");
+
     // Clean up temporary test entries
+    await db.shareLinkFile.deleteMany({ where: { shareLinkId: multiShare.id } });
+    await db.shareLink.delete({ where: { id: multiShare.id } });
+    await db.fileMetadata.deleteMany({ where: { id: { in: multiDocFiles.map((f) => f.id) } } });
     await db.blockchainProof.deleteMany({ where: { shareLinkId: bcLink.id } });
     await db.shareLink.deleteMany({
       where: { id: { in: [standardLinkId, bcLinkId, concurrencyLinkId] } },

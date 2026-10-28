@@ -4,7 +4,7 @@ import React, { useState, useRef } from "react";
 import {
   Shield, Key, Download, Lock, CheckCircle2, AlertTriangle, AlertOctagon,
   Image as ImageIcon, RefreshCw, Eye, ExternalLink, ArrowRight, FileCheck,
-  Check, XCircle, Globe, Fingerprint, Layers
+  Check, XCircle, Globe, Fingerprint, Layers, ShieldCheck
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { decryptFileBuffer, computeSHA256Buffer } from "@/lib/crypto";
@@ -44,15 +44,23 @@ export default function DocumentRecoveryPage() {
   const [otpInput, setOtpInput] = useState("");
   const [geoCountry, setGeoCountry] = useState("US");
 
+  // Multi-file bundle state (up to 20 files per link)
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+
   // Recovery execution states
   const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus>("IDLE");
   const [statusMessage, setStatusMessage] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
 
-  // Integrity telemetry
+  // Dual-Layer Integrity telemetry (Encrypted Ciphertext Check & Decrypted Plaintext Check)
+  const [computedCiphertextHash, setComputedCiphertextHash] = useState<string | null>(null);
+  const [expectedCiphertextHash, setExpectedCiphertextHash] = useState<string | null>(null);
+  const [ciphertextTampered, setCiphertextTampered] = useState<boolean | null>(null);
+
   const [computedPlaintextHash, setComputedPlaintextHash] = useState<string | null>(null);
   const [expectedOriginalHash, setExpectedOriginalHash] = useState<string | null>(null);
+  const [plaintextTampered, setPlaintextTampered] = useState<boolean | null>(null);
 
   // Parse link / URL input
   const handleParseLink = async (e: React.FormEvent) => {
@@ -95,6 +103,12 @@ export default function DocumentRecoveryPage() {
       }
 
       setLinkMeta(data);
+
+      const filesList = data.files && data.files.length > 0 ? data.files : (data.file ? [data.file] : []);
+      if (filesList.length > 0) {
+        setSelectedFileId(filesList[0].id);
+      }
+
       if (data.status === "REVOKED") {
         setRecoveryStatus("TRANSFER_REVOKED");
         setStatusMessage("This transfer has been revoked by the owner.");
@@ -103,7 +117,11 @@ export default function DocumentRecoveryPage() {
         setStatusMessage("This transfer has expired and can no longer be recovered.");
       } else {
         setRecoveryStatus("WAITING_VERIFICATION");
-        setStatusMessage("Transfer located. Complete policy authentication to authorize document recovery.");
+        setStatusMessage(
+          filesList.length > 1
+            ? `Transfer located: Multi-file bundle containing ${filesList.length} secure documents (max 20). Complete policy authentication to recover.`
+            : "Transfer located. Complete policy authentication to authorize document recovery."
+        );
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -171,64 +189,129 @@ export default function DocumentRecoveryPage() {
     }
   };
 
-  // Execute Authorized Recovery & Decryption
-  const handleExecuteRecovery = async () => {
+  // Helper to recover and verify a single file
+  const recoverAndVerifySingleFile = async (targetFileId?: string) => {
+    const res = await fetch("/api/share/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: linkId,
+        fileId: targetFileId || selectedFileId || undefined,
+        password: passwordInput || null,
+        otpCode: otpInput || null,
+        geo: geoCountry,
+        email: claimedEmail || null,
+      }),
+    });
+
+    const contentType = res.headers.get("Content-Type");
+    if (!res.ok || contentType?.includes("application/json")) {
+      const errorData = await res.json();
+      setRecoveryStatus("ACCESS_DENIED");
+      throw new Error(errorData.error || "Access policy evaluation rejected recovery request");
+    }
+
+    setRecoveryStatus("VERIFICATION_SUCCESSFUL");
+    setStatusMessage("Access policy authorization confirmed. Streaming encrypted ciphertext...");
+    setProgressPercent(40);
+
+    // Extract headers
+    const kmsReleasedKey = res.headers.get("x-payload-key");
+    const expectedCipherHash = res.headers.get("x-ciphertext-hash");
+    const expectedOrigHash = res.headers.get("x-original-hash");
+    const headerFileName = res.headers.get("x-file-name");
+    const activeDecryptionKey = kmsReleasedKey || hexKeyInput.trim();
+
+    if (!activeDecryptionKey) {
+      throw new Error("Decryption key unavailable. Provide the hex key token or ensure the document has KMS envelope enabled.");
+    }
+
+    const fileBuffer = await res.arrayBuffer();
+    setProgressPercent(60);
+
+    // STEP 1: VERIFY ENCRYPTED VALUE (CIPHERTEXT INTEGRITY CHECK)
+    // Check if the ciphertext stored on server / received in transit matches the registered signature
+    setStatusMessage("Verifying encrypted ciphertext integrity (storage & transit tampering check)...");
+    const computedCipherHash = await computeSHA256Buffer(fileBuffer);
+    setComputedCiphertextHash(computedCipherHash);
+    setExpectedCiphertextHash(expectedCipherHash);
+
+    if (expectedCipherHash && expectedCipherHash.toLowerCase() !== computedCipherHash.toLowerCase()) {
+      setCiphertextTampered(true);
+      setRecoveryStatus("INTEGRITY_MISMATCH");
+      throw new Error(
+        `CRITICAL TAMPER ALERT! Encrypted payload was modified or corrupted in storage!\n` +
+        `Computed Ciphertext Hash: ${computedCipherHash}\n` +
+        `Expected Ciphertext Hash: ${expectedCipherHash}\n` +
+        `Decryption aborted to protect system integrity.`
+      );
+    }
+    setCiphertextTampered(false);
+
+    // STEP 2: DECRYPT WITH WEB CRYPTO (AES-256-GCM)
+    setStatusMessage("Encrypted ciphertext verified untampered. Decrypting document with Web Crypto AES-256-GCM...");
+    setProgressPercent(75);
+    const decryptedBuffer = await decryptFileBuffer(fileBuffer, activeDecryptionKey);
+
+    // STEP 3: VERIFY DECRYPTED VALUE (PLAINTEXT INTEGRITY CHECK)
+    // Check if recovered plaintext matches the original unencrypted document uploaded by the owner
+    setStatusMessage("Performing cryptographic SHA-256 plaintext integrity verification...");
+    setProgressPercent(90);
+    const computedPlainHash = await computeSHA256Buffer(decryptedBuffer);
+    setComputedPlaintextHash(computedPlainHash);
+    setExpectedOriginalHash(expectedOrigHash);
+
+    if (expectedOrigHash && expectedOrigHash.toLowerCase() !== computedPlainHash.toLowerCase()) {
+      setPlaintextTampered(true);
+      setRecoveryStatus("INTEGRITY_MISMATCH");
+      throw new Error(
+        `CRITICAL INTEGRITY MISMATCH! Recovered document content does not match original document uploaded by owner!\n` +
+        `Computed Plaintext Hash: ${computedPlainHash}\n` +
+        `Expected Original Hash: ${expectedOrigHash}\n` +
+        `Document display halted due to integrity mismatch.`
+      );
+    }
+    setPlaintextTampered(false);
+
+    // Resolve file name
+    let fileName = "recovered_document.bin";
+    const filesList = linkMeta?.files || (linkMeta?.file ? [linkMeta.file] : []);
+    const matchingFile = filesList.find((f: any) => f.id === targetFileId || f.id === selectedFileId) || linkMeta?.file;
+    const rawEncodedName = headerFileName || matchingFile?.fileName;
+
+    if (rawEncodedName) {
+      try {
+        fileName = window.atob(rawEncodedName);
+      } catch {
+        fileName = rawEncodedName;
+      }
+    }
+
+    // Trigger secure file download
+    const blob = new Blob([decryptedBuffer], {
+      type: matchingFile?.mimeType || "application/octet-stream",
+    });
+    const downloadUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(downloadUrl);
+
+    return { fileName, computedCipherHash, computedPlainHash };
+  };
+
+  // Execute Authorized Recovery & Decryption (Single or Batch)
+  const handleExecuteRecovery = async (targetFileId?: string) => {
     if (!linkId) return;
     setIsProcessing(true);
     setProgressPercent(15);
     setStatusMessage("Submitting access credentials to AccessPolicyEngine...");
 
     try {
-      const res = await fetch("/api/share/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: linkId,
-          password: passwordInput || null,
-          otpCode: otpInput || null,
-          geo: geoCountry,
-          email: claimedEmail || null,
-        }),
-      });
-
-      const contentType = res.headers.get("Content-Type");
-      if (!res.ok || contentType?.includes("application/json")) {
-        const errorData = await res.json();
-        setRecoveryStatus("ACCESS_DENIED");
-        throw new Error(errorData.error || "Access policy evaluation rejected recovery request");
-      }
-
-      setRecoveryStatus("VERIFICATION_SUCCESSFUL");
-      setStatusMessage("Access policy authorization confirmed. Streaming encrypted ciphertext...");
-      setProgressPercent(45);
-
-      // Extract DEK from KMS response header or user input
-      const kmsReleasedKey = res.headers.get("x-payload-key");
-      const expectedOrigHash = res.headers.get("x-original-hash");
-      const activeDecryptionKey = kmsReleasedKey || hexKeyInput.trim();
-
-      if (!activeDecryptionKey) {
-        throw new Error("Decryption key unavailable. Provide the hex key token or ensure the document has KMS envelope enabled.");
-      }
-
-      const fileBuffer = await res.arrayBuffer();
-      setProgressPercent(70);
-      setStatusMessage("Decrypting document payload locally with Web Crypto (AES-256-GCM)...");
-
-      const decryptedBuffer = await decryptFileBuffer(fileBuffer, activeDecryptionKey);
-      setProgressPercent(85);
-      setStatusMessage("Performing cryptographic SHA-256 document integrity check...");
-
-      // Compute plaintext SHA-256 hash
-      const computedHash = await computeSHA256Buffer(decryptedBuffer);
-      setComputedPlaintextHash(computedHash);
-      setExpectedOriginalHash(expectedOrigHash);
-
-      // Verify integrity against expected original hash
-      if (expectedOrigHash && expectedOrigHash.toLowerCase() !== computedHash.toLowerCase()) {
-        setRecoveryStatus("INTEGRITY_MISMATCH");
-        throw new Error("CRITICAL INTEGRITY MISMATCH! Computed SHA-256 hash does not match original document signature.");
-      }
+      await recoverAndVerifySingleFile(targetFileId);
 
       // Check blockchain status if applicable
       if (linkMeta?.transferMode === "BLOCKCHAIN") {
@@ -242,28 +325,34 @@ export default function DocumentRecoveryPage() {
       }
 
       setProgressPercent(100);
-      setStatusMessage("Document integrity cryptographically confirmed. Initiating secure file save...");
+      setStatusMessage("Integrity confirmed: Encrypted ciphertext and decrypted original plaintext both verified untampered!");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatusMessage(msg);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
-      // Download file to client
-      let fileName = "recovered_document.bin";
-      if (linkMeta?.file?.fileName) {
-        try {
-          fileName = window.atob(linkMeta.file.fileName);
-        } catch {}
+  // Recover all files in bundle sequentially
+  const handleRecoverAllFiles = async () => {
+    const filesList = linkMeta?.files || (linkMeta?.file ? [linkMeta.file] : []);
+    if (!filesList.length) return;
+
+    setIsProcessing(true);
+    try {
+      for (let i = 0; i < filesList.length; i++) {
+        const file = filesList[i];
+        setSelectedFileId(file.id);
+        setStatusMessage(`Recovering and verifying file ${i + 1} of ${filesList.length}...`);
+        await recoverAndVerifySingleFile(file.id);
+        // Small delay between downloads
+        await new Promise((r) => setTimeout(r, 600));
       }
 
-      const blob = new Blob([decryptedBuffer], {
-        type: linkMeta?.file?.mimeType || "application/octet-stream",
-      });
-      const downloadUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = downloadUrl;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(downloadUrl);
-
+      setRecoveryStatus(linkMeta?.transferMode === "BLOCKCHAIN" ? "PROOF_VERIFIED" : "INTEGRITY_VERIFIED");
+      setProgressPercent(100);
+      setStatusMessage(`All ${filesList.length} files successfully recovered and cryptographically verified.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setStatusMessage(msg);
@@ -585,57 +674,215 @@ export default function DocumentRecoveryPage() {
               </div>
             )}
 
-            {/* Secure Download / Decrypt Action */}
-            <button
-              onClick={handleExecuteRecovery}
-              disabled={
-                !linkMeta ||
-                isProcessing ||
-                recoveryStatus === "ACCESS_DENIED" ||
-                recoveryStatus === "TRANSFER_EXPIRED" ||
-                recoveryStatus === "TRANSFER_REVOKED"
-              }
-              className={`w-full py-3.5 rounded-xl font-mono text-xs font-bold transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer ${
-                !linkMeta || isProcessing
-                  ? "bg-indigo-600/30 text-indigo-300/40 cursor-not-allowed"
-                  : "bg-indigo-600 hover:bg-indigo-500 text-white hover:shadow-indigo-500/25"
-              }`}
-            >
-              {isProcessing ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  Reconstructing & Verifying...
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  Authorize & Recover Document
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Cryptographic Proof Verification Results */}
-          {computedPlaintextHash && (
-            <div className="p-5 rounded-2xl bg-cyber-card border border-border-primary shadow-xl space-y-3 font-mono text-xs">
-              <div className="flex items-center gap-2 text-emerald-400">
-                <FileCheck className="w-4 h-4" />
-                <span className="font-bold uppercase tracking-wider">SHA-256 Document Signature</span>
-              </div>
-              <div className="p-3 rounded-xl bg-cyber-dark border border-border-primary space-y-1.5">
-                <div className="text-[10px] text-text-secondary uppercase">Computed Document Hash</div>
-                <div className="text-[11px] text-emerald-300 break-all select-all">{computedPlaintextHash}</div>
-              </div>
-              {expectedOriginalHash && (
-                <div className="p-3 rounded-xl bg-cyber-dark border border-border-primary space-y-1.5">
-                  <div className="text-[10px] text-text-secondary uppercase">Expected Master Hash</div>
-                  <div className="text-[11px] text-indigo-300 break-all select-all">{expectedOriginalHash}</div>
+          {/* Multi-File Bundle Document Selector (Up to 20 files per link) */}
+          {linkMeta?.files && linkMeta.files.length > 1 && (
+            <div className="p-6 rounded-2xl bg-cyber-card border border-border-primary shadow-xl space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-6 h-6 rounded-full bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center text-xs font-mono font-bold">
+                    <Layers className="w-3.5 h-3.5" />
+                  </span>
+                  <h2 className="text-sm font-bold uppercase tracking-wider font-mono text-text-primary">
+                    Transfer Bundle ({linkMeta.files.length} Documents)
+                  </h2>
                 </div>
-              )}
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                  Single Link Bundle (Max 20)
+                </span>
+              </div>
+
+              <p className="text-[11px] text-text-secondary font-mono">
+                This transfer link securely shares multiple files. Select an individual document to recover or verify all documents in batch.
+              </p>
+
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {linkMeta.files.map((file: any, index: number) => {
+                  let originalName = `document_${index + 1}.bin`;
+                  try {
+                    originalName = window.atob(file.fileName);
+                  } catch {
+                    originalName = file.fileName;
+                  }
+
+                  const isSelected = selectedFileId === file.id;
+
+                  return (
+                    <div
+                      key={file.id}
+                      onClick={() => setSelectedFileId(file.id)}
+                      className={`p-3 rounded-xl border font-mono text-xs cursor-pointer transition-all flex items-center justify-between gap-3 ${
+                        isSelected
+                          ? "bg-indigo-600/15 border-indigo-500 text-text-primary shadow-md"
+                          : "bg-cyber-dark border-border-primary text-text-secondary hover:border-indigo-500/30 hover:text-text-primary"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${
+                          isSelected ? "bg-indigo-600 text-white" : "bg-cyber-card text-text-secondary"
+                        }`}>
+                          {index + 1}
+                        </div>
+                        <div className="truncate">
+                          <div className="font-bold truncate text-text-primary">{originalName}</div>
+                          <div className="text-[10px] text-text-secondary">
+                            {(file.fileSize / 1024).toFixed(1)} KB • {file.encryptionAlgo || "AES-256-GCM"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isSelected && (
+                          <span className="text-[10px] bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded font-bold">
+                            Selected
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedFileId(file.id);
+                            handleExecuteRecovery(file.id);
+                          }}
+                          disabled={isProcessing}
+                          className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold cursor-pointer transition-all flex items-center gap-1 disabled:opacity-50"
+                        >
+                          <Download className="w-3 h-3" />
+                          Recover
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleRecoverAllFiles}
+                disabled={isProcessing}
+                className="w-full py-2.5 rounded-xl border border-indigo-500/30 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 font-mono text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Recover & Verify All {linkMeta.files.length} Documents
+              </button>
             </div>
           )}
+
+          {/* Secure Download / Decrypt Action */}
+          <button
+            onClick={() => handleExecuteRecovery()}
+            disabled={
+              !linkMeta ||
+              isProcessing ||
+              recoveryStatus === "ACCESS_DENIED" ||
+              recoveryStatus === "TRANSFER_EXPIRED" ||
+              recoveryStatus === "TRANSFER_REVOKED"
+            }
+            className={`w-full py-3.5 rounded-xl font-mono text-xs font-bold transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer ${
+              !linkMeta || isProcessing
+                ? "bg-indigo-600/30 text-indigo-300/40 cursor-not-allowed"
+                : "bg-indigo-600 hover:bg-indigo-500 text-white hover:shadow-indigo-500/25"
+            }`}
+          >
+            {isProcessing ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                Reconstructing & Verifying Integrity...
+              </>
+            ) : (
+              <>
+                <Download className="w-4 h-4" />
+                {linkMeta?.files && linkMeta.files.length > 1
+                  ? "Authorize & Recover Selected Document"
+                  : "Authorize & Recover Document"}
+              </>
+            )}
+          </button>
         </div>
+
+        {/* Dual Cryptographic Proof Verification Results */}
+        {(computedCiphertextHash || computedPlaintextHash) && (
+          <div className="p-5 rounded-2xl bg-cyber-card border border-border-primary shadow-xl space-y-4 font-mono text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-indigo-400 font-bold uppercase tracking-wider">
+                <FileCheck className="w-4 h-4 text-indigo-400" />
+                <span>Dual-Layer Cryptographic Audit</span>
+              </div>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                ciphertextTampered === false && plaintextTampered === false
+                  ? "bg-emerald-500/15 border border-emerald-500/30 text-emerald-400"
+                  : "bg-rose-500/15 border border-rose-500/30 text-rose-400"
+              }`}>
+                {ciphertextTampered === false && plaintextTampered === false
+                  ? "ZERO TAMPERING DETECTED"
+                  : "INTEGRITY ALERT"}
+              </span>
+            </div>
+
+            {/* Check 1: Encrypted Ciphertext Signature Check */}
+            {computedCiphertextHash && (
+              <div className="p-3.5 rounded-xl bg-cyber-dark border border-border-primary space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-bold text-text-primary flex items-center gap-1.5">
+                    <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                    1. Encrypted Ciphertext Hash (Storage & Transit Check)
+                  </span>
+                  {ciphertextTampered === false ? (
+                    <span className="text-emerald-400 font-bold flex items-center gap-1 text-[10px]">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> MATCH / UNTAMPERED
+                    </span>
+                  ) : ciphertextTampered === true ? (
+                    <span className="text-rose-400 font-bold flex items-center gap-1 text-[10px]">
+                      <AlertOctagon className="w-3.5 h-3.5" /> CIPHERTEXT MODIFIED
+                    </span>
+                  ) : null}
+                </div>
+                <div className="space-y-1 text-[10px]">
+                  <div className="text-text-secondary">Computed Ciphertext SHA-256:</div>
+                  <div className="text-emerald-300 break-all select-all bg-black/30 p-1.5 rounded">{computedCiphertextHash}</div>
+                  {expectedCiphertextHash && (
+                    <>
+                      <div className="text-text-secondary mt-1">Expected Server Signature:</div>
+                      <div className="text-indigo-300 break-all select-all bg-black/30 p-1.5 rounded">{expectedCiphertextHash}</div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Check 2: Decrypted Plaintext Signature Check */}
+            {computedPlaintextHash && (
+              <div className="p-3.5 rounded-xl bg-cyber-dark border border-border-primary space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-bold text-text-primary flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    2. Decrypted Plaintext Hash (Original Master Check)
+                  </span>
+                  {plaintextTampered === false ? (
+                    <span className="text-emerald-400 font-bold flex items-center gap-1 text-[10px]">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> MATCH / PRISTINE CONTENT
+                    </span>
+                  ) : plaintextTampered === true ? (
+                    <span className="text-rose-400 font-bold flex items-center gap-1 text-[10px]">
+                      <AlertOctagon className="w-3.5 h-3.5" /> CONTENT MISMATCH
+                    </span>
+                  ) : null}
+                </div>
+                <div className="space-y-1 text-[10px]">
+                  <div className="text-text-secondary">Computed Document SHA-256:</div>
+                  <div className="text-emerald-300 break-all select-all bg-black/30 p-1.5 rounded">{computedPlaintextHash}</div>
+                  {expectedOriginalHash && (
+                    <>
+                      <div className="text-text-secondary mt-1">Expected Original Master Hash:</div>
+                      <div className="text-indigo-300 break-all select-all bg-black/30 p-1.5 rounded">{expectedOriginalHash}</div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
+  </div>
   );
 }

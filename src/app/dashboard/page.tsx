@@ -54,6 +54,8 @@ export default function DashboardPage() {
 
   // Modal control states for Share Link Creation
   const [shareModalFile, setShareModalFile] = useState<any | null>(null);
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [shareSelectedDocIds, setShareSelectedDocIds] = useState<string[]>([]);
   const [shareTransferMode, setShareTransferMode] = useState<"STANDARD" | "BLOCKCHAIN">("STANDARD");
   const [shareRecipientEmail, setShareRecipientEmail] = useState("");
   const [shareExpiryOption, setShareExpiryOption] = useState("24h");
@@ -263,8 +265,24 @@ export default function DashboardPage() {
   // -------------------------------------------------------------
   // Ephemeral Link Creation with Dual-Mode Support
   // -------------------------------------------------------------
-  const handleOpenShareModal = async (file: any) => {
-    setShareModalFile(file);
+  const handleOpenShareModal = async (file?: any, multiDocIds?: string[]) => {
+    let targetIds: string[] = [];
+    if (multiDocIds && multiDocIds.length > 0) {
+      targetIds = multiDocIds.slice(0, 20);
+    } else if (file) {
+      targetIds = [file.id];
+    } else if (selectedDocIds.length > 0) {
+      targetIds = selectedDocIds.slice(0, 20);
+    }
+
+    if (targetIds.length === 0) {
+      showToast("error", "Please select at least one document to create a transfer.");
+      return;
+    }
+
+    const primaryFile = files.find((f) => f.id === targetIds[0]) || file || files[0];
+    setShareModalFile(primaryFile);
+    setShareSelectedDocIds(targetIds);
     setShareTransferMode("STANDARD");
     setShareRecipientEmail("");
     setShareExpiryOption("24h");
@@ -281,7 +299,7 @@ export default function DashboardPage() {
 
     // Retrieve stored encryption key or generate fallback
     try {
-      const storedKey = localStorage.getItem(`doc_key_${file.id}`);
+      const storedKey = localStorage.getItem(`doc_key_${primaryFile.id}`);
       if (storedKey && storedKey.length === 64) {
         setGeneratedHexKey(storedKey);
       } else {
@@ -292,6 +310,50 @@ export default function DashboardPage() {
     } catch {
       setGeneratedHexKey("0000000000000000000000000000000000000000000000000000000000000000");
     }
+  };
+
+  const handleToggleDocSelection = (id: string) => {
+    setSelectedDocIds((prev) => {
+      if (prev.includes(id)) {
+        return prev.filter((item) => item !== id);
+      } else {
+        if (prev.length >= 20) {
+          showToast("error", "Maximum 20 documents can be bundled into a single transfer link.");
+          return prev;
+        }
+        return [...prev, id];
+      }
+    });
+  };
+
+  const handleSelectAllDocs = () => {
+    if (selectedDocIds.length === Math.min(files.length, 20) && files.length > 0) {
+      setSelectedDocIds([]);
+    } else {
+      const capped = files.slice(0, 20).map((f) => f.id);
+      setSelectedDocIds(capped);
+      if (files.length > 20) {
+        showToast("info", "Selected first 20 documents (maximum allowed per link).");
+      }
+    }
+  };
+
+  const handleToggleDocInModal = (id: string) => {
+    setShareSelectedDocIds((prev) => {
+      if (prev.includes(id)) {
+        if (prev.length <= 1) {
+          showToast("error", "At least one document must remain selected.");
+          return prev;
+        }
+        return prev.filter((item) => item !== id);
+      } else {
+        if (prev.length >= 20) {
+          showToast("error", "Maximum 20 documents allowed in a single transfer link.");
+          return prev;
+        }
+        return [...prev, id];
+      }
+    });
   };
 
   const handleCreateShareLink = async (e: React.FormEvent) => {
@@ -320,11 +382,14 @@ export default function DashboardPage() {
         expiryDate = null; // Unlimited
       }
 
+      const fileIdsPayload = shareSelectedDocIds.length > 0 ? shareSelectedDocIds : [shareModalFile.id];
+
       const res = await fetch("/api/share/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          fileId: shareModalFile.id,
+          fileIds: fileIdsPayload,
+          fileId: fileIdsPayload[0],
           transferMode: shareTransferMode,
           recipientEmail: shareRecipientEmail.trim() || null,
           expiresAt: expiryDate ? expiryDate.toISOString() : null,
@@ -354,8 +419,8 @@ export default function DashboardPage() {
       showToast(
         "success",
         shareTransferMode === "BLOCKCHAIN"
-          ? "Blockchain transfer created. SHA-256 integrity hash queued on-chain."
-          : "Standard transfer link created successfully."
+          ? `Blockchain transfer created with ${fileIdsPayload.length} file(s). Hash queued on-chain.`
+          : `Standard transfer link created with ${fileIdsPayload.length} file(s).`
       );
       fetchDashboardData();
     } catch (err: unknown) {
@@ -965,23 +1030,66 @@ export default function DashboardPage() {
               exit={{ opacity: 0, y: -10 }}
               className="space-y-6"
             >
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight text-text-primary">My Documents</h1>
                   <p className="text-xs text-text-secondary font-mono mt-1">Encrypted document vaults stored securely off-chain.</p>
                 </div>
-                <button
-                  onClick={() => setActiveTab("upload")}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-mono rounded-xl cursor-pointer transition-all flex items-center gap-2"
-                >
-                  <Upload className="w-3.5 h-3.5" /> Upload Document
-                </button>
+                <div className="flex items-center gap-2.5">
+                  {selectedDocIds.length > 0 && (
+                    <button
+                      onClick={() => handleOpenShareModal(undefined, selectedDocIds)}
+                      className="px-4 py-2 bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white text-xs font-mono font-bold rounded-xl cursor-pointer transition-all flex items-center gap-2 shadow-lg shadow-indigo-500/20"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      Create Multi-File Transfer ({selectedDocIds.length} / 20)
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setActiveTab("upload")}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-mono rounded-xl cursor-pointer transition-all flex items-center gap-2"
+                  >
+                    <Upload className="w-3.5 h-3.5" /> Upload Document
+                  </button>
+                </div>
               </div>
+
+              {selectedDocIds.length > 0 && (
+                <div className="p-3 bg-indigo-500/10 border border-indigo-500/25 rounded-xl flex items-center justify-between font-mono text-xs text-indigo-300">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+                    <span><b>{selectedDocIds.length}</b> of 20 maximum documents selected for single-link sharing</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleSelectAllDocs}
+                      className="text-[10px] text-indigo-400 hover:underline cursor-pointer"
+                    >
+                      {selectedDocIds.length === Math.min(files.length, 20) ? "Deselect All" : "Select Up To 20"}
+                    </button>
+                    <span className="text-border-primary">|</span>
+                    <button
+                      onClick={() => setSelectedDocIds([])}
+                      className="text-[10px] text-rose-400 hover:underline cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="glass-panel rounded-2xl overflow-hidden">
                 <table className="w-full border-collapse text-left text-xs font-mono">
                   <thead>
                     <tr className="bg-cyber-card border-b border-border-primary text-text-secondary uppercase tracking-widest text-[9px]">
+                      <th className="p-4 w-10">
+                        <input
+                          type="checkbox"
+                          checked={selectedDocIds.length > 0 && selectedDocIds.length === Math.min(files.length, 20)}
+                          onChange={handleSelectAllDocs}
+                          className="accent-indigo-500 cursor-pointer"
+                        />
+                      </th>
                       <th className="p-4">Document Name</th>
                       <th className="p-4">Size</th>
                       <th className="p-4">Encryption Standard</th>
@@ -997,10 +1105,20 @@ export default function DashboardPage() {
                         originalName = safeBase64Decode(file.fileName);
                       } catch {}
 
+                      const isSelected = selectedDocIds.includes(file.id);
+
                       return (
-                        <tr key={file.id} className="hover:bg-indigo-600/[0.02] transition-colors">
+                        <tr key={file.id} className={`hover:bg-indigo-600/[0.04] transition-colors ${isSelected ? "bg-indigo-600/[0.06]" : ""}`}>
+                          <td className="p-4">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => handleToggleDocSelection(file.id)}
+                              className="accent-indigo-500 cursor-pointer"
+                            />
+                          </td>
                           <td className="p-4 font-bold text-text-primary flex items-center gap-2.5">
-                            <HardDrive className="w-4 h-4 text-indigo-400" />
+                            <HardDrive className={`w-4 h-4 ${isSelected ? "text-indigo-400" : "text-text-secondary"}`} />
                             {originalName}
                           </td>
                           <td className="p-4 text-text-secondary">{formatBytes(file.fileSize)}</td>
@@ -1015,10 +1133,13 @@ export default function DashboardPage() {
                           <td className="p-4 text-text-secondary">{new Date(file.createdAt).toLocaleDateString()}</td>
                           <td className="p-4 text-right">
                             <button
-                              onClick={() => handleOpenShareModal(file)}
+                              onClick={() => handleOpenShareModal(file, isSelected ? selectedDocIds : [file.id])}
                               className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-mono text-xs cursor-pointer inline-flex items-center gap-1.5 transition-all shadow-md"
                             >
-                              <Link2 className="w-3 h-3" /> Create Transfer
+                              <Link2 className="w-3 h-3" />
+                              {selectedDocIds.length > 1 && isSelected
+                                ? `Bundle (${selectedDocIds.length})`
+                                : "Create Transfer"}
                             </button>
                           </td>
                         </tr>
@@ -1454,6 +1575,54 @@ export default function DashboardPage() {
               ) : (
                 /* Transfer Setup Form */
                 <form onSubmit={handleCreateShareLink} className="space-y-5">
+                  {/* MULTI-DOCUMENT BUNDLE SELECTOR (Up to 20 files) */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-wider font-bold flex items-center gap-1.5">
+                        <Folder className="w-3.5 h-3.5 text-indigo-400" />
+                        Bundled Documents ({shareSelectedDocIds.length} / 20)
+                      </label>
+                      <span className="text-[10px] font-mono text-indigo-400 font-semibold">
+                        Single Link (Max 20)
+                      </span>
+                    </div>
+
+                    <div className="p-3 bg-cyber-dark/80 rounded-xl border border-border-primary space-y-2 max-h-40 overflow-y-auto">
+                      {files.map((f) => {
+                        let name = "document.bin";
+                        try {
+                          name = safeBase64Decode(f.fileName);
+                        } catch {
+                          name = f.fileName;
+                        }
+                        const isChecked = shareSelectedDocIds.includes(f.id);
+
+                        return (
+                          <div
+                            key={f.id}
+                            onClick={() => handleToggleDocInModal(f.id)}
+                            className={`p-2 rounded-lg border font-mono text-xs cursor-pointer transition-all flex items-center justify-between gap-2 ${
+                              isChecked
+                                ? "bg-indigo-600/15 border-indigo-500/50 text-text-primary"
+                                : "bg-cyber-card border-border-primary/50 text-text-secondary hover:border-indigo-500/30"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {}} // handled by parent onClick
+                                className="accent-indigo-500 cursor-pointer"
+                              />
+                              <span className="truncate text-[11px] font-bold">{name}</span>
+                            </div>
+                            <span className="text-[9px] text-text-secondary shrink-0">{formatBytes(f.fileSize)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   {/* TRANSFER MODE SELECTOR */}
                   <div>
                     <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-wider mb-2 font-bold">
