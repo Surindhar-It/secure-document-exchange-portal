@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
       fileId,
       fileIds,
       transferMode = "STANDARD", // "STANDARD" | "BLOCKCHAIN"
+      authMethod = "NONE", // "NONE" | "PASSWORD" | "EMAIL_OTP" | "BOTH"
       recipientEmail,
       expiresAt,
       maxDownloads,
@@ -48,6 +49,34 @@ export async function POST(req: NextRequest) {
     if (selectedFileIds.length > 20) {
       return NextResponse.json(
         { error: `A single transfer link can contain a maximum of 20 files. You selected ${selectedFileIds.length}.` },
+        { status: 400 }
+      );
+    }
+
+    // Determine authentication requirements
+    const isOtpRequired = authMethod === "EMAIL_OTP" || authMethod === "BOTH" || !!otpEnabled;
+    const isPasswordRequired = authMethod === "PASSWORD" || authMethod === "BOTH" || !!password;
+
+    // Validate Recipient Email if OTP or email binding is required
+    let sanitizedRecipientEmail: string | null = null;
+    if (isOtpRequired || recipientEmail) {
+      if (!recipientEmail || typeof recipientEmail !== "string" || !recipientEmail.trim()) {
+        return NextResponse.json(
+          { error: "Recipient email address is required when Email OTP Verification is configured." },
+          { status: 400 }
+        );
+      }
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(recipientEmail.trim())) {
+        return NextResponse.json({ error: "Please provide a valid recipient email address format." }, { status: 400 });
+      }
+      sanitizedRecipientEmail = recipientEmail.trim().toLowerCase();
+    }
+
+    // Validate Password if password protection was chosen
+    if (isPasswordRequired && (!password || password.trim().length === 0)) {
+      return NextResponse.json(
+        { error: "Access password is required when Password Protection is enabled." },
         { status: 400 }
       );
     }
@@ -85,14 +114,14 @@ export async function POST(req: NextRequest) {
 
     // Process Password
     let passwordHash = null;
-    if (password) {
+    if (isPasswordRequired && password) {
       const salt = await bcrypt.genSalt(10);
       passwordHash = await bcrypt.hash(password, salt);
     }
 
     // Process OTP
     let otpSecret = null;
-    if (otpEnabled) {
+    if (isOtpRequired) {
       otpSecret = crypto.randomBytes(20).toString("hex");
     }
 
@@ -139,13 +168,14 @@ export async function POST(req: NextRequest) {
         fileId: primaryFile.id,
         ownerId: sessionUser.id,
         transferMode: transferMode === "BLOCKCHAIN" ? "BLOCKCHAIN" : "STANDARD",
-        recipientEmail: recipientEmail ? recipientEmail.trim().toLowerCase() : null,
+        authMethod,
+        recipientEmail: sanitizedRecipientEmail,
         status: "ACTIVE",
         expiresAt: expiresAt ? new Date(expiresAt) : null,
         maxDownloads: maxDownloads ? parseInt(maxDownloads) : null,
         passwordHash,
         otpSecret,
-        otpEnabled: !!otpEnabled,
+        otpEnabled: isOtpRequired,
         allowedIps: allowedIps || null,
         allowedGeos: allowedGeos || null,
         stegoEnabled: !!stegoEnabled,

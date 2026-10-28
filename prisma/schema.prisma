@@ -64,6 +64,7 @@ model ShareLink {
   expiresAt        DateTime?
   maxDownloads     Int?
   downloadCount    Int               @default(0)
+  authMethod       String            @default("NONE") // NONE, PASSWORD, EMAIL_OTP, BOTH
   passwordHash     String?           // Optional hashed password to access sharing link
   otpSecret        String?           // Optional OTP secret for access link verification
   otpEnabled       Boolean           @default(false)
@@ -78,6 +79,27 @@ model ShareLink {
   watermarkText    String?           // Optional watermark overlay text
   createdAt        DateTime          @default(now())
   blockchainProofs BlockchainProof[]
+  emailOtps        EmailOtp[]
+}
+
+model EmailOtp {
+  id                String    @id @default(uuid())
+  shareLinkId       String
+  shareLink         ShareLink @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
+  recipientEmail    String
+  otpHash           String    // HMAC-SHA256 hash using server-side secret (never raw OTP)
+  expiresAt         DateTime  // Valid for 5 minutes (300 seconds)
+  attempts          Int       @default(0) // Incremented on failed verification
+  maxAttempts       Int       @default(5) // Max 5 attempts
+  resendAvailableAt DateTime  // 60-second resend cooldown timestamp
+  isUsed            Boolean   @default(false)
+  verifiedAt        DateTime?
+  sessionToken      String?   // Short-lived authorization token issued upon verification
+  sessionExpiresAt  DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([shareLinkId, recipientEmail])
+  @@index([sessionToken])
 }
 
 model ShareLinkFile {

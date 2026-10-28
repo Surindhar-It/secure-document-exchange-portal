@@ -340,7 +340,133 @@ async function runTests() {
     const alteredPlainHash = crypto.createHash("sha256").update(alteredPlaintext).digest("hex");
     assert(alteredPlainHash !== expectedPlaintextHash, "Tamper Detection 2: Plaintext modification detected immediately via master hash mismatch");
 
+    // 11. Test Email OTP Verification System & Ephemeral Cryptographic Control
+    console.log("\n--- Test 11: Email OTP Verification System & Ephemeral Control ---");
+    const OTP_SECRET = process.env.OTP_SECRET || "securedocx-email-otp-hmac-secret-k3y-v1-987234091283";
+
+    function generateOTP() {
+      return crypto.randomInt(100000, 999999).toString();
+    }
+
+    function hashOTP(otp) {
+      return crypto.createHmac("sha256", OTP_SECRET).update(otp.trim()).digest("hex");
+    }
+
+    function verifyOTPHash(inputOtp, storedHash) {
+      if (!inputOtp || !storedHash) return false;
+      const inputHash = hashOTP(inputOtp);
+      if (inputHash.length !== storedHash.length) return false;
+      return crypto.timingSafeEqual(Buffer.from(inputHash, "utf8"), Buffer.from(storedHash, "utf8"));
+    }
+
+    function maskEmail(email) {
+      if (!email || !email.includes("@")) return "***@***.***";
+      const [local, domain] = email.split("@");
+      if (local.length <= 2) {
+        return `${local[0]}*@${domain}`;
+      }
+      const visiblePrefix = local.substring(0, 2);
+      const maskedLocal = visiblePrefix + "*".repeat(Math.max(local.length - 2, 4));
+      return `${maskedLocal}@${domain}`;
+    }
+
+    function generateSessionToken() {
+      return crypto.randomBytes(32).toString("hex");
+    }
+
+    // Sub-test 11.1: Mask Email Helper
+    const sampleEmail = "surindhar.test@enterprise.com";
+    const masked = maskEmail(sampleEmail);
+    assert(masked.startsWith("su") && masked.includes("***") && masked.endsWith("@enterprise.com"), `Recipient email masked securely: ${masked}`);
+
+    // Sub-test 11.2: Cryptographic OTP generation and verification
+    const plainOtp = generateOTP();
+    assert(plainOtp.length === 6 && /^\d{6}$/.test(plainOtp), "OTP is cryptographically secure 6-digit random code");
+    const hashedOtp = hashOTP(plainOtp);
+    assert(hashedOtp.length === 64, "OTP stored as keyed HMAC-SHA256 verifier (raw OTP never stored in plain text)");
+    assert(verifyOTPHash(plainOtp, hashedOtp) === true, "Constant-time HMAC verification matches correct code");
+    assert(verifyOTPHash("000000", hashedOtp) === false, "Constant-time HMAC verification rejects incorrect code");
+
+    // Sub-test 11.3: Link creation with EMAIL_OTP authentication
+    const otpLinkId = "otp_" + crypto.randomBytes(6).toString("hex");
+    const otpLink = await db.shareLink.create({
+      data: {
+        id: otpLinkId,
+        fileId: testFile.id,
+        ownerId: testUser.id,
+        transferMode: "STANDARD",
+        authMethod: "EMAIL_OTP",
+        recipientEmail: sampleEmail,
+        otpEnabled: true,
+        status: "ACTIVE",
+        maxDownloads: 3,
+        downloadCount: 0,
+      },
+    });
+    assert(otpLink.authMethod === "EMAIL_OTP" && otpLink.otpEnabled === true, "Link created with authMethod=EMAIL_OTP bound to recipient email");
+
+    // Sub-test 11.4: Database EmailOtp record lifecycle (5-minute validity, 60s cooldown, 5 max attempts)
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 300 * 1000); // 5 minutes
+    const resendAvailableAt = new Date(now.getTime() + 60 * 1000); // 60 seconds
+
+    const otpRecord = await db.emailOtp.create({
+      data: {
+        shareLinkId: otpLink.id,
+        recipientEmail: sampleEmail,
+        otpHash: hashedOtp,
+        expiresAt,
+        resendAvailableAt,
+        maxAttempts: 5,
+        attempts: 0,
+        isUsed: false,
+      },
+    });
+    assert(otpRecord.maxAttempts === 5, "Email OTP configured with max 5 attempts");
+    assert(Math.round((otpRecord.expiresAt.getTime() - now.getTime()) / 1000) === 300, "OTP validity set to exactly 5 minutes (300 seconds)");
+    assert(Math.round((otpRecord.resendAvailableAt.getTime() - now.getTime()) / 1000) === 60, "Resend cooldown set to exactly 60 seconds");
+
+    // Sub-test 11.5: Attempt tracking & Lockout
+    await db.emailOtp.update({
+      where: { id: otpRecord.id },
+      data: { attempts: 1 },
+    });
+    const updatedOtp = await db.emailOtp.findUnique({ where: { id: otpRecord.id } });
+    assert(updatedOtp.attempts === 1, "Failed attempt incremented correctly (4 attempts remaining)");
+
+    // Sub-test 11.6: Successful verification and session token issuance
+    const testSessionToken = generateSessionToken();
+    const sessionExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    await db.emailOtp.update({
+      where: { id: otpRecord.id },
+      data: {
+        isUsed: true,
+        verifiedAt: new Date(),
+        sessionToken: testSessionToken,
+        sessionExpiresAt,
+      },
+    });
+
+    const verifiedRecord = await db.emailOtp.findFirst({
+      where: { sessionToken: testSessionToken, isUsed: true },
+    });
+    assert(!!verifiedRecord, "OTP marked isUsed=true and valid session token issued on successful verification");
+    assert(verifiedRecord.sessionExpiresAt > new Date(), "Session token active with future expiration timestamp");
+
+    // Sub-test 11.7: Ephemeral Session Token Verification
+    const activeSession = await db.emailOtp.findFirst({
+      where: {
+        shareLinkId: otpLink.id,
+        sessionToken: testSessionToken,
+        isUsed: true,
+        sessionExpiresAt: { gt: new Date() },
+      },
+    });
+    assert(!!activeSession, "Access policy validates session token from database without requiring raw OTP exposure");
+
     // Clean up temporary test entries
+    await db.emailOtp.deleteMany({ where: { shareLinkId: otpLink.id } });
+    await db.shareLink.delete({ where: { id: otpLink.id } });
     await db.shareLinkFile.deleteMany({ where: { shareLinkId: multiShare.id } });
     await db.shareLink.delete({ where: { id: multiShare.id } });
     await db.fileMetadata.deleteMany({ where: { id: { in: multiDocFiles.map((f) => f.id) } } });

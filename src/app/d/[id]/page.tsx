@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { decryptFileBuffer, computeSHA256Buffer } from "@/lib/crypto";
+import EmailOtpVerificationCard from "@/components/EmailOtpVerificationCard";
 
 // Full ISO 3166-1 alpha-2 country list
 const COUNTRIES: { code: string; name: string; flag: string }[] = [
@@ -226,6 +227,10 @@ export default function DownloadPortalPage() {
   const [claimedEmailInput, setClaimedEmailInput] = useState("");
 
   // Link metadata details
+  const [authMethod, setAuthMethod] = useState<"NONE" | "PASSWORD" | "EMAIL_OTP" | "BOTH">("NONE");
+  const [maskedRecipientEmail, setMaskedRecipientEmail] = useState<string | null>(null);
+  const [otpSessionToken, setOtpSessionToken] = useState<string | null>(null);
+  const [isOtpVerified, setIsOtpVerified] = useState(false);
   const [fileNameEnc, setFileNameEnc] = useState("");
   const [fileSize, setFileSize] = useState<number | null>(null);
   const [mimeType, setMimeType] = useState("");
@@ -311,6 +316,8 @@ export default function DownloadPortalPage() {
       setTransferMode(data.transferMode || "STANDARD");
       setBlockchainProof(data.blockchainProof || null);
       setHasRecipientBinding(!!data.hasRecipientBinding);
+      if (data.authMethod) setAuthMethod(data.authMethod);
+      if (data.maskedRecipientEmail) setMaskedRecipientEmail(data.maskedRecipientEmail);
 
       const resolvedFiles = data.files && data.files.length > 0 ? data.files : (data.file ? [data.file] : []);
       setFilesList(resolvedFiles);
@@ -362,6 +369,8 @@ export default function DownloadPortalPage() {
       setTransferMode(data.transferMode || "STANDARD");
       setBlockchainProof(data.blockchainProof || null);
       setHasRecipientBinding(!!data.hasRecipientBinding);
+      if (data.authMethod) setAuthMethod(data.authMethod);
+      if (data.maskedRecipientEmail) setMaskedRecipientEmail(data.maskedRecipientEmail);
 
       const resolvedFiles = data.files && data.files.length > 0 ? data.files : (data.file ? [data.file] : []);
       setFilesList(resolvedFiles);
@@ -420,6 +429,7 @@ export default function DownloadPortalPage() {
         fileId: targetFileId || selectedFileId || undefined,
         password: passwordInput || null,
         otpCode: otpInput || null,
+        sessionToken: otpSessionToken || null,
         geo: selectedCountry?.code || "XX",
         email: claimedEmailInput || null,
       }),
@@ -525,7 +535,13 @@ export default function DownloadPortalPage() {
     if (e) e.preventDefault();
     setErrorMsg("");
 
-    if (hasRecipientBinding && !claimedEmailInput) {
+    const requiresOtp = authMethod === "EMAIL_OTP" || authMethod === "BOTH" || otpRequired;
+    if (requiresOtp && !isOtpVerified) {
+      setErrorMsg("Please complete Email OTP verification to unlock document access.");
+      return;
+    }
+
+    if (hasRecipientBinding && !requiresOtp && !claimedEmailInput) {
       setErrorMsg("Please enter your designated recipient email address to proceed.");
       return;
     }
@@ -546,7 +562,13 @@ export default function DownloadPortalPage() {
     if (!filesList.length) return;
     setErrorMsg("");
 
-    if (hasRecipientBinding && !claimedEmailInput) {
+    const requiresOtp = authMethod === "EMAIL_OTP" || authMethod === "BOTH" || otpRequired;
+    if (requiresOtp && !isOtpVerified) {
+      setErrorMsg("Please complete Email OTP verification to unlock document access.");
+      return;
+    }
+
+    if (hasRecipientBinding && !requiresOtp && !claimedEmailInput) {
       setErrorMsg("Please enter your designated recipient email address to proceed.");
       return;
     }
@@ -889,8 +911,8 @@ export default function DownloadPortalPage() {
               </div>
             )}
 
-            {/* Recipient Binding Identity Challenge */}
-            {hasRecipientBinding && (
+            {/* Recipient Binding Identity Challenge (only if not using Email OTP) */}
+            {hasRecipientBinding && !(authMethod === "EMAIL_OTP" || authMethod === "BOTH" || otpRequired) && (
               <div className="space-y-2">
                 <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-widest flex items-center gap-1.5">
                   <Mail className="w-3.5 h-3.5 text-indigo-400" /> Recipient Verification (Bound Transfer)
@@ -906,8 +928,23 @@ export default function DownloadPortalPage() {
               </div>
             )}
 
+            {/* Email OTP Verification System Card */}
+            {(authMethod === "EMAIL_OTP" || authMethod === "BOTH" || otpRequired) && (
+              <EmailOtpVerificationCard
+                linkId={linkId}
+                maskedEmail={maskedRecipientEmail}
+                isVerified={isOtpVerified}
+                onVerified={(token) => {
+                  setOtpSessionToken(token);
+                  setIsOtpVerified(true);
+                  setErrorMsg("");
+                }}
+                disabled={decryptStep > 0 && decryptStep < 4}
+              />
+            )}
+
             {/* Password input */}
-            {passwordRequired && (
+            {(passwordRequired || authMethod === "PASSWORD" || authMethod === "BOTH") && (
               <div className="space-y-2">
                 <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-widest">Access Password Required</label>
                 <div className="relative">
@@ -921,49 +958,6 @@ export default function DownloadPortalPage() {
                     className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-cyber-dark border border-border-primary focus:border-indigo-500/50 text-xs font-mono text-text-primary outline-none"
                   />
                 </div>
-              </div>
-            )}
-
-            {/* OTP input */}
-            {otpRequired && (
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-widest">Simulated OTP Check</label>
-                  <button
-                    type="button"
-                    onClick={handleRequestOtp}
-                    className="text-[9px] font-mono text-indigo-400 hover:underline cursor-pointer"
-                  >
-                    Request Code
-                  </button>
-                </div>
-
-                <AnimatePresence>
-                  {simulatedOtpInfo && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0 }}
-                      className="p-3 bg-indigo-500/5 border border-border-primary rounded-xl space-y-2 font-mono text-[10px]"
-                    >
-                      <div className="text-text-secondary leading-normal">{simulatedOtpInfo}</div>
-                      <div className="flex items-center justify-between p-2 bg-cyber-dark rounded border border-border-primary mt-1">
-                        <span className="text-text-secondary">MOCK DISPATCH OTP CODE:</span>
-                        <code className="text-xs text-indigo-400 font-bold select-all bg-indigo-500/10 px-1.5 py-0.5 rounded">{simulatedOtp}</code>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <input
-                  type="text"
-                  maxLength={6}
-                  value={otpInput}
-                  onChange={(e) => setOtpInput(e.target.value)}
-                  required
-                  placeholder="000000"
-                  className="w-full p-2.5 rounded-xl bg-cyber-dark border border-border-primary focus:border-indigo-500/50 text-center tracking-[4px] text-xs font-mono text-indigo-400 font-bold outline-none"
-                />
               </div>
             )}
 
@@ -1032,11 +1026,13 @@ export default function DownloadPortalPage() {
 
             <button
               type="submit"
-              disabled={decryptStep > 0 && decryptStep < 4}
-              className="w-full py-4 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-xs font-mono flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-indigo-500/5 transition-all"
+              disabled={(decryptStep > 0 && decryptStep < 4) || ((authMethod === "EMAIL_OTP" || authMethod === "BOTH" || otpRequired) && !isOtpVerified)}
+              className="w-full py-4 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-xs font-mono flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-indigo-500/5 transition-all"
             >
               <Download className="w-4 h-4" />
-              {filesList.length > 1
+              {((authMethod === "EMAIL_OTP" || authMethod === "BOTH" || otpRequired) && !isOtpVerified)
+                ? "Verify Email OTP to Authorize Download"
+                : filesList.length > 1
                 ? "Download & Verify Selected Document"
                 : "Download Cipher & Decrypt Locally"}
             </button>

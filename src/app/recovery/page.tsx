@@ -9,6 +9,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { decryptFileBuffer, computeSHA256Buffer } from "@/lib/crypto";
 import { extractPayloadFromImageData } from "@/lib/steganography";
+import EmailOtpVerificationCard from "@/components/EmailOtpVerificationCard";
 
 type RecoveryStatus =
   | "IDLE"
@@ -42,6 +43,8 @@ export default function DocumentRecoveryPage() {
   const [claimedEmail, setClaimedEmail] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [otpInput, setOtpInput] = useState("");
+  const [otpSessionToken, setOtpSessionToken] = useState<string | null>(null);
+  const [isOtpVerified, setIsOtpVerified] = useState(false);
   const [geoCountry, setGeoCountry] = useState("US");
 
   // Multi-file bundle state (up to 20 files per link)
@@ -93,6 +96,8 @@ export default function DocumentRecoveryPage() {
 
     setLinkId(extractedId);
     setMetaLoading(true);
+    setOtpSessionToken(null);
+    setIsOtpVerified(false);
 
     try {
       const res = await fetch(`/api/share/download?id=${encodeURIComponent(extractedId)}&geo=${geoCountry}`);
@@ -199,6 +204,7 @@ export default function DocumentRecoveryPage() {
         fileId: targetFileId || selectedFileId || undefined,
         password: passwordInput || null,
         otpCode: otpInput || null,
+        sessionToken: otpSessionToken || null,
         geo: geoCountry,
         email: claimedEmail || null,
       }),
@@ -306,6 +312,14 @@ export default function DocumentRecoveryPage() {
   // Execute Authorized Recovery & Decryption (Single or Batch)
   const handleExecuteRecovery = async (targetFileId?: string) => {
     if (!linkId) return;
+
+    const requiresOtp = linkMeta?.authMethod === "EMAIL_OTP" || linkMeta?.authMethod === "BOTH" || linkMeta?.otpRequired;
+    if (requiresOtp && !isOtpVerified) {
+      setRecoveryStatus("WAITING_VERIFICATION");
+      setStatusMessage("Please complete Email OTP verification to unlock document recovery.");
+      return;
+    }
+
     setIsProcessing(true);
     setProgressPercent(15);
     setStatusMessage("Submitting access credentials to AccessPolicyEngine...");
@@ -338,6 +352,13 @@ export default function DocumentRecoveryPage() {
   const handleRecoverAllFiles = async () => {
     const filesList = linkMeta?.files || (linkMeta?.file ? [linkMeta.file] : []);
     if (!filesList.length) return;
+
+    const requiresOtp = linkMeta?.authMethod === "EMAIL_OTP" || linkMeta?.authMethod === "BOTH" || linkMeta?.otpRequired;
+    if (requiresOtp && !isOtpVerified) {
+      setRecoveryStatus("WAITING_VERIFICATION");
+      setStatusMessage("Please complete Email OTP verification to unlock document recovery.");
+      return;
+    }
 
     setIsProcessing(true);
     try {
@@ -438,7 +459,24 @@ export default function DocumentRecoveryPage() {
             </div>
 
             <div className="space-y-4">
-              {linkMeta?.hasRecipientBinding && (
+              {/* Email OTP Verification Challenge Card */}
+              {(linkMeta?.authMethod === "EMAIL_OTP" || linkMeta?.authMethod === "BOTH" || linkMeta?.otpRequired) && (
+                <EmailOtpVerificationCard
+                  linkId={linkId}
+                  maskedEmail={linkMeta?.maskedRecipientEmail}
+                  isVerified={isOtpVerified}
+                  onVerified={(token) => {
+                    setOtpSessionToken(token);
+                    setIsOtpVerified(true);
+                    setRecoveryStatus("VERIFICATION_SUCCESSFUL");
+                    setStatusMessage("Email OTP verified. Ready to authorize document recovery.");
+                  }}
+                  disabled={isProcessing}
+                />
+              )}
+
+              {/* Recipient binding email input (only if not using Email OTP) */}
+              {linkMeta?.hasRecipientBinding && !(linkMeta?.authMethod === "EMAIL_OTP" || linkMeta?.authMethod === "BOTH" || linkMeta?.otpRequired) && (
                 <div>
                   <label className="text-xs font-mono text-text-secondary block mb-1">Designated Recipient Email (Required)</label>
                   <input
@@ -451,7 +489,7 @@ export default function DocumentRecoveryPage() {
                 </div>
               )}
 
-              {linkMeta?.passwordRequired && (
+              {(linkMeta?.passwordRequired || linkMeta?.authMethod === "PASSWORD" || linkMeta?.authMethod === "BOTH") && (
                 <div>
                   <label className="text-xs font-mono text-text-secondary block mb-1">Link Password</label>
                   <input
@@ -459,19 +497,6 @@ export default function DocumentRecoveryPage() {
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
                     placeholder="Enter security password"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              )}
-
-              {linkMeta?.otpRequired && (
-                <div>
-                  <label className="text-xs font-mono text-text-secondary block mb-1">One-Time Passcode (OTP)</label>
-                  <input
-                    type="text"
-                    value={otpInput}
-                    onChange={(e) => setOtpInput(e.target.value)}
-                    placeholder="6-digit verification code"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:outline-none focus:border-indigo-500"
                   />
                 </div>
@@ -775,10 +800,13 @@ export default function DocumentRecoveryPage() {
               isProcessing ||
               recoveryStatus === "ACCESS_DENIED" ||
               recoveryStatus === "TRANSFER_EXPIRED" ||
-              recoveryStatus === "TRANSFER_REVOKED"
+              recoveryStatus === "TRANSFER_REVOKED" ||
+              ((linkMeta?.authMethod === "EMAIL_OTP" || linkMeta?.authMethod === "BOTH" || linkMeta?.otpRequired) && !isOtpVerified)
             }
             className={`w-full py-3.5 rounded-xl font-mono text-xs font-bold transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer ${
-              !linkMeta || isProcessing
+              !linkMeta ||
+              isProcessing ||
+              ((linkMeta?.authMethod === "EMAIL_OTP" || linkMeta?.authMethod === "BOTH" || linkMeta?.otpRequired) && !isOtpVerified)
                 ? "bg-indigo-600/30 text-indigo-300/40 cursor-not-allowed"
                 : "bg-indigo-600 hover:bg-indigo-500 text-white hover:shadow-indigo-500/25"
             }`}
@@ -787,6 +815,11 @@ export default function DocumentRecoveryPage() {
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
                 Reconstructing & Verifying Integrity...
+              </>
+            ) : ((linkMeta?.authMethod === "EMAIL_OTP" || linkMeta?.authMethod === "BOTH" || linkMeta?.otpRequired) && !isOtpVerified) ? (
+              <>
+                <Shield className="w-4 h-4" />
+                Verify Email OTP to Authorize Recovery
               </>
             ) : (
               <>

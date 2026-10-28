@@ -8,6 +8,7 @@ export interface AccessPolicyInput {
   userAgent?: string | null;
   password?: string | null;
   otpCode?: string | null;
+  sessionToken?: string | null;
   claimedEmail?: string | null;
   geoCountry?: string | null;
 }
@@ -28,7 +29,7 @@ export async function evaluateAccessPolicy(
   input: AccessPolicyInput,
   isDownloadExecution: boolean = false
 ): Promise<PolicyEvaluationResult> {
-  const { linkId, clientIp, password, otpCode, claimedEmail, geoCountry } = input;
+  const { linkId, clientIp, password, otpCode, sessionToken, claimedEmail, geoCountry } = input;
 
   const link = await db.shareLink.findUnique({
     where: { id: linkId },
@@ -222,23 +223,59 @@ export async function evaluateAccessPolicy(
   // 8. OTP Verification (if required or enforced by risk level)
   const requireOtp = link.otpEnabled || riskAssessment.level === "MEDIUM";
   if (requireOtp) {
-    if (!otpCode) {
-      return {
-        granted: false,
-        status: "OTP_REQUIRED",
-        reason: "Multi-factor authentication (OTP) is required.",
-        link,
-        riskAssessment,
-      };
+    let isSessionValid = false;
+
+    // Check if client provided a verified session authorization token
+    if (sessionToken) {
+      const { validateOTPSessionToken } = await import("./email-otp");
+      isSessionValid = await validateOTPSessionToken(link.id, sessionToken);
     }
-    if (otpCode !== link.otpSecret) {
-      return {
-        granted: false,
-        status: "DENIED",
-        reason: "Invalid OTP verification passcode.",
-        link,
-        riskAssessment,
-      };
+
+    if (!isSessionValid) {
+      if (!otpCode) {
+        return {
+          granted: false,
+          status: "OTP_REQUIRED",
+          reason: "Email OTP verification is required to download this file.",
+          link,
+          riskAssessment,
+        };
+      }
+
+      let isOtpValid = false;
+
+      // Check against hashed EmailOtp database record
+      const activeOtpRecord = await db.emailOtp.findFirst({
+        where: {
+          shareLinkId: link.id,
+          isUsed: false,
+          expiresAt: { gte: new Date() },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (activeOtpRecord) {
+        const { verifyOTPHash } = await import("./email-otp");
+        isOtpValid = verifyOTPHash(otpCode.trim(), activeOtpRecord.otpHash);
+        if (isOtpValid) {
+          await db.emailOtp.update({
+            where: { id: activeOtpRecord.id },
+            data: { isUsed: true, verifiedAt: new Date() },
+          });
+        }
+      } else if (link.otpSecret && otpCode.trim() === link.otpSecret.trim()) {
+        isOtpValid = true;
+      }
+
+      if (!isOtpValid) {
+        return {
+          granted: false,
+          status: "DENIED",
+          reason: "Invalid or expired OTP verification passcode.",
+          link,
+          riskAssessment,
+        };
+      }
     }
   }
 

@@ -1,0 +1,426 @@
+import crypto from "crypto";
+import nodemailer from "nodemailer";
+import { db } from "./db";
+import { recordAuditEvent } from "./audit";
+
+const OTP_SECRET = process.env.OTP_SECRET || process.env.JWT_SECRET || "securedocx-otp-hmac-master-key-2026";
+const OTP_VALIDITY_SECONDS = 300; // 5 minutes
+const RESEND_COOLDOWN_SECONDS = 60; // 60 seconds
+const MAX_ATTEMPTS = 5;
+
+/**
+ * Generate a cryptographically secure 6-digit numeric OTP
+ */
+export function generateOTP(): string {
+  // crypto.randomInt ensures uniform distribution in [100000, 999999]
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+/**
+ * Hash an OTP using keyed HMAC-SHA256 (never store plaintext OTPs)
+ */
+export function hashOTP(otp: string): string {
+  return crypto.createHmac("sha256", OTP_SECRET).update(otp.trim()).digest("hex");
+}
+
+/**
+ * Constant-time comparison to prevent timing attacks
+ */
+export function verifyOTPHash(inputOtp: string, storedHash: string): boolean {
+  if (!inputOtp || !storedHash) return false;
+  const inputHash = hashOTP(inputOtp);
+  if (inputHash.length !== storedHash.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(inputHash, "utf8"), Buffer.from(storedHash, "utf8"));
+}
+
+/**
+ * Generate a high-entropy session authorization token (32 bytes hex)
+ */
+export function generateSessionToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+/**
+ * Partially mask recipient email address for privacy (e.g. su****@gmail.com)
+ */
+export function maskEmail(email: string): string {
+  if (!email || !email.includes("@")) return "***@***.***";
+  const [local, domain] = email.split("@");
+  if (local.length <= 2) {
+    return `${local[0]}*@${domain}`;
+  }
+  const visiblePrefix = local.substring(0, 2);
+  const maskedLocal = visiblePrefix + "*".repeat(Math.max(local.length - 2, 4));
+  return `${maskedLocal}@${domain}`;
+}
+
+/**
+ * Create a configured Nodemailer transport
+ */
+function createEmailTransporter() {
+  const host = process.env.SMTP_HOST;
+  const port = parseInt(process.env.SMTP_PORT || "587");
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+
+  if (host && user && pass) {
+    return nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
+    });
+  }
+
+  // Fallback: If SMTP is not explicitly configured, use mock transport in development
+  return null;
+}
+
+/**
+ * Dispatch OTP email with security-hardened HTML template
+ */
+export async function sendOTPEmail(
+  recipientEmail: string,
+  otpCode: string,
+  linkId: string
+): Promise<{ success: boolean; simulated: boolean; error?: string }> {
+  const transporter = createEmailTransporter();
+  const fromAddress = process.env.SMTP_FROM || '"SecureDocX Verification" <no-reply@securedocx.portal>';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Your Secure Download Verification Code</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; margin: 0; }
+          .container { max-width: 520px; margin: 0 auto; background-color: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+          .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+          .badge { font-size: 11px; font-family: monospace; text-transform: uppercase; padding: 4px 10px; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); color: #818cf8; border-radius: 9999px; font-weight: bold; }
+          h1 { font-size: 20px; font-weight: 800; color: #ffffff; margin: 0 0 12px 0; }
+          p { font-size: 13px; line-height: 1.6; color: #9ca3af; margin: 0 0 20px 0; }
+          .otp-card { background: #0b0f19; border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center; margin: 24px 0; }
+          .otp-code { font-family: 'Courier New', Courier, monospace; font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #6366f1; }
+          .expiry-notice { font-size: 11px; color: #f59e0b; margin-top: 8px; font-family: monospace; }
+          .security-footer { border-top: 1px solid #1f2937; padding-top: 20px; margin-top: 24px; font-size: 11px; color: #6b7280; font-family: monospace; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="brand">
+            <span class="badge">SECUREDOCX • ZERO-KNOWLEDGE PORTAL</span>
+          </div>
+          <h1>Document Download Verification Code</h1>
+          <p>
+            You are attempting to download an encrypted file bundle shared via <strong>SecureDocX</strong>.
+            To authorize document reconstruction, enter the following one-time passcode:
+          </p>
+          <div class="otp-card">
+            <div class="otp-code">${otpCode}</div>
+            <div class="expiry-notice">⏱ Valid for 5 minutes (300 seconds) • One-Time Use Only</div>
+          </div>
+          <p>
+            If you did not request this verification code, please ignore this email. The file remains protected under AES-256-GCM encryption.
+          </p>
+          <div class="security-footer">
+            Transfer Token ID: ${linkId}<br>
+            Security Standard: AES-256-GCM Ephemeral KMS Envelope
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  if (transporter) {
+    try {
+      await transporter.sendMail({
+        from: fromAddress,
+        to: recipientEmail,
+        subject: `[SecureDocX] Your One-Time Download Passcode: ${otpCode}`,
+        text: `Your SecureDocX download verification code is: ${otpCode}. It expires in 5 minutes.`,
+        html: htmlContent,
+      });
+      return { success: true, simulated: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[EmailOTP] SMTP Delivery error:", msg);
+      return { success: false, simulated: false, error: msg };
+    }
+  }
+
+  // Development Fallback: Safe simulated delivery
+  console.log(`\n======================================================`);
+  console.log(`[SECUREDOCX EMAIL OTP SIMULATOR]`);
+  console.log(`To: ${recipientEmail}`);
+  console.log(`Link ID: ${linkId}`);
+  console.log(`OTP Code: ${otpCode}`);
+  console.log(`Validity: 5 minutes (300 seconds)`);
+  console.log(`======================================================\n`);
+
+  return { success: true, simulated: true };
+}
+
+/**
+ * Service to generate and dispatch OTP to designated recipient
+ */
+export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
+  const link = await db.shareLink.findUnique({
+    where: { id: shareLinkId },
+  });
+
+  if (!link || link.isRevoked || link.status === "REVOKED") {
+    throw new Error("Sharing link is invalid or has been revoked.");
+  }
+
+  if (link.status === "FROZEN" || link.status === "BLOCKED") {
+    throw new Error("This secure transfer has been frozen due to security violations.");
+  }
+
+  if (link.expiresAt && new Date() > link.expiresAt) {
+    throw new Error("Sharing link has expired.");
+  }
+
+  if (!link.recipientEmail) {
+    throw new Error("This transfer link does not have an Email OTP recipient binding configured.");
+  }
+
+  const recipientEmail = link.recipientEmail.toLowerCase().trim();
+
+  // Check 60-second cooldown from the most recent OTP
+  const latestOtp = await db.emailOtp.findFirst({
+    where: {
+      shareLinkId: link.id,
+      recipientEmail,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const now = new Date();
+  if (latestOtp && latestOtp.resendAvailableAt > now) {
+    const secondsRemaining = Math.ceil((latestOtp.resendAvailableAt.getTime() - now.getTime()) / 1000);
+    throw new Error(`Resend cooldown active. Please wait ${secondsRemaining} second(s) before requesting a new OTP.`);
+  }
+
+  // Invalidate any existing active OTPs for this link
+  await db.emailOtp.updateMany({
+    where: {
+      shareLinkId: link.id,
+      recipientEmail,
+      isUsed: false,
+    },
+    data: {
+      isUsed: true,
+    },
+  });
+
+  // Generate 6-digit random code
+  const plainOtp = generateOTP();
+  const otpHash = hashOTP(plainOtp);
+
+  const expiresAt = new Date(Date.now() + OTP_VALIDITY_SECONDS * 1000);
+  const resendAvailableAt = new Date(Date.now() + RESEND_COOLDOWN_SECONDS * 1000);
+
+  // Store new OTP record
+  const otpRecord = await db.emailOtp.create({
+    data: {
+      shareLinkId: link.id,
+      recipientEmail,
+      otpHash,
+      expiresAt,
+      resendAvailableAt,
+      maxAttempts: MAX_ATTEMPTS,
+      attempts: 0,
+      isUsed: false,
+    },
+  });
+
+  // Dispatch email
+  const emailResult = await sendOTPEmail(recipientEmail, plainOtp, link.id);
+
+  // Record audit log event (without recording plaintext OTP)
+  await recordAuditEvent({
+    action: "EMAIL_OTP_REQUESTED",
+    ipAddress: clientIp,
+    shareLinkId: link.id,
+    userEmail: recipientEmail,
+    details: {
+      shareLinkId: link.id,
+      recipientMasked: maskEmail(recipientEmail),
+      expiresAt,
+      simulated: emailResult.simulated,
+    },
+  });
+
+  return {
+    success: true,
+    message: "A verification code has been sent to your registered email address.",
+    maskedEmail: maskEmail(recipientEmail),
+    expiresAt: expiresAt.toISOString(),
+    validitySeconds: OTP_VALIDITY_SECONDS,
+    resendCooldown: RESEND_COOLDOWN_SECONDS,
+    // In simulated dev mode, pass simulated flag so developer UI can optionally display test hint
+    simulated: emailResult.simulated,
+  };
+}
+
+/**
+ * Service to verify recipient OTP and issue authorization session token
+ */
+export async function verifyEmailOTP(shareLinkId: string, inputOtp: string, clientIp: string) {
+  if (!inputOtp || inputOtp.trim().length !== 6) {
+    throw new Error("Please enter a valid 6-digit verification code.");
+  }
+
+  const link = await db.shareLink.findUnique({
+    where: { id: shareLinkId },
+  });
+
+  if (!link || link.isRevoked || link.status === "REVOKED") {
+    throw new Error("Sharing link is invalid or has been revoked.");
+  }
+
+  if (!link.recipientEmail) {
+    throw new Error("No recipient email binding found on this transfer link.");
+  }
+
+  const recipientEmail = link.recipientEmail.toLowerCase().trim();
+
+  // Find latest active OTP for this link
+  const activeOtp = await db.emailOtp.findFirst({
+    where: {
+      shareLinkId: link.id,
+      recipientEmail,
+      isUsed: false,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (!activeOtp) {
+    throw new Error("No active OTP request found. Please click 'Send OTP' to request a code.");
+  }
+
+  const now = new Date();
+
+  // Check Expiration (5 minutes)
+  if (now > activeOtp.expiresAt) {
+    await db.emailOtp.update({
+      where: { id: activeOtp.id },
+      data: { isUsed: true },
+    });
+
+    await recordAuditEvent({
+      action: "EMAIL_OTP_EXPIRED",
+      ipAddress: clientIp,
+      shareLinkId: link.id,
+      userEmail: recipientEmail,
+      details: { shareLinkId: link.id, expiredAt: activeOtp.expiresAt },
+    });
+
+    throw new Error("The verification code has expired after 5 minutes. Please request a new code.");
+  }
+
+  // Check Attempt Limit (max 5)
+  if (activeOtp.attempts >= activeOtp.maxAttempts) {
+    await db.emailOtp.update({
+      where: { id: activeOtp.id },
+      data: { isUsed: true },
+    });
+
+    await recordAuditEvent({
+      action: "EMAIL_OTP_LOCKED",
+      ipAddress: clientIp,
+      shareLinkId: link.id,
+      userEmail: recipientEmail,
+      details: { shareLinkId: link.id, attempts: activeOtp.attempts },
+    });
+
+    throw new Error("Maximum verification attempts reached (5/5). Please request a fresh verification code.");
+  }
+
+  // Verify OTP
+  const isValid = verifyOTPHash(inputOtp.trim(), activeOtp.otpHash);
+
+  if (!isValid) {
+    const newAttempts = activeOtp.attempts + 1;
+    const isNowLocked = newAttempts >= activeOtp.maxAttempts;
+
+    await db.emailOtp.update({
+      where: { id: activeOtp.id },
+      data: {
+        attempts: newAttempts,
+        isUsed: isNowLocked,
+      },
+    });
+
+    await recordAuditEvent({
+      action: "EMAIL_OTP_FAILED",
+      ipAddress: clientIp,
+      shareLinkId: link.id,
+      userEmail: recipientEmail,
+      details: {
+        shareLinkId: link.id,
+        attempt: newAttempts,
+        maxAttempts: activeOtp.maxAttempts,
+        remainingAttempts: Math.max(activeOtp.maxAttempts - newAttempts, 0),
+      },
+    });
+
+    if (isNowLocked) {
+      throw new Error("Maximum verification attempts reached (5/5). This code has been invalidated. Please request a new code.");
+    }
+
+    const remaining = activeOtp.maxAttempts - newAttempts;
+    throw new Error(`Incorrect verification code. ${remaining} attempt(s) remaining.`);
+  }
+
+  // OTP is valid! Generate short-lived authorization session token (valid 15 mins)
+  const sessionToken = generateSessionToken();
+  const sessionExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+  await db.emailOtp.update({
+    where: { id: activeOtp.id },
+    data: {
+      isUsed: true,
+      verifiedAt: now,
+      sessionToken,
+      sessionExpiresAt,
+    },
+  });
+
+  await recordAuditEvent({
+    action: "EMAIL_OTP_VERIFIED",
+    ipAddress: clientIp,
+    shareLinkId: link.id,
+    userEmail: recipientEmail,
+    details: {
+      shareLinkId: link.id,
+      recipientMasked: maskEmail(recipientEmail),
+      sessionExpiresAt,
+    },
+  });
+
+  return {
+    success: true,
+    message: "Email verification successful! Download access authorized.",
+    sessionToken,
+    sessionExpiresAt: sessionExpiresAt.toISOString(),
+  };
+}
+
+/**
+ * Validate an authorization session token for file download
+ */
+export async function validateOTPSessionToken(shareLinkId: string, sessionToken: string): Promise<boolean> {
+  if (!sessionToken || sessionToken.length < 32) return false;
+
+  const validOtpSession = await db.emailOtp.findFirst({
+    where: {
+      shareLinkId,
+      sessionToken,
+      sessionExpiresAt: { gte: new Date() },
+    },
+  });
+
+  return !!validOtpSession;
+}

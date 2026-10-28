@@ -94,14 +94,29 @@ export async function GET(req: NextRequest) {
       originalHash: f.originalHash, // SHA-256 of original unencrypted document
     }));
 
+    // Mask recipient email for safe privacy-preserving display
+    let maskedRecipientEmail: string | null = null;
+    if (link.recipientEmail) {
+      const { maskEmail } = await import("@/lib/email-otp");
+      maskedRecipientEmail = maskEmail(link.recipientEmail);
+    }
+
+    const resolvedAuthMethod = link.authMethod || (
+      link.otpEnabled && link.passwordHash ? "BOTH" :
+      link.otpEnabled ? "EMAIL_OTP" :
+      link.passwordHash ? "PASSWORD" : "NONE"
+    );
+
     // Return meta details
     return NextResponse.json({
       success: true,
       transferMode: link.transferMode,
+      authMethod: resolvedAuthMethod,
       status: link.status,
       hasGeoRestriction,
       hasRecipientBinding,
       recipientEmail: link.recipientEmail,
+      maskedRecipientEmail,
       expiresAt: link.expiresAt,
       maxDownloads: link.maxDownloads,
       downloadCount: link.downloadCount,
@@ -141,7 +156,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { id: linkId, fileId, password, otpCode, geo, email: claimedEmail } = body;
+    const { id: linkId, fileId, password, otpCode, sessionToken, geo, email: claimedEmail } = body;
 
     if (!linkId) {
       return NextResponse.json({ error: "Share Link ID is required" }, { status: 400 });
@@ -155,6 +170,7 @@ export async function POST(req: NextRequest) {
         userAgent,
         password: password || null,
         otpCode: otpCode || null,
+        sessionToken: sessionToken || null,
         claimedEmail: claimedEmail || null,
         geoCountry: geo || null,
       },

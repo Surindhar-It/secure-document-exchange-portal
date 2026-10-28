@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Shield, Key, Upload, Folder, Link2, Activity, Cpu, Settings, LogOut,
   Clock, HardDrive, AlertTriangle, CheckCircle2, X, Globe, Fingerprint,
-  Lock, ShieldCheck, QrCode, Trash2, RefreshCw, Mail, Check, ExternalLink,
+  Lock, Unlock, ShieldCheck, QrCode, Trash2, RefreshCw, Mail, Check, ExternalLink,
   BarChart3, Image as ImageIcon, FileCheck, Layers, PieChart, TrendingUp, Users, ShieldAlert
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -63,6 +63,7 @@ export default function DashboardPage() {
   const [shareMaxDownloads, setShareMaxDownloads] = useState("");
   const [sharePassword, setSharePassword] = useState("");
   const [shareOtpEnabled, setShareOtpEnabled] = useState(false);
+  const [shareAuthMethod, setShareAuthMethod] = useState<"NONE" | "PASSWORD" | "EMAIL_OTP" | "BOTH">("NONE");
   const [shareAllowedIps, setShareAllowedIps] = useState("");
   const [shareAllowedGeos, setShareAllowedGeos] = useState("");
   const [shareWatermarkText, setShareWatermarkText] = useState("");
@@ -290,6 +291,7 @@ export default function DashboardPage() {
     setShareMaxDownloads("");
     setSharePassword("");
     setShareOtpEnabled(false);
+    setShareAuthMethod("NONE");
     setShareAllowedIps("");
     setShareAllowedGeos("");
     setShareWatermarkText("");
@@ -360,6 +362,20 @@ export default function DashboardPage() {
     e.preventDefault();
     if (!shareModalFile) return;
 
+    // Validate Authentication Method Requirements
+    if (shareAuthMethod === "EMAIL_OTP" || shareAuthMethod === "BOTH") {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!shareRecipientEmail || !emailRegex.test(shareRecipientEmail.trim())) {
+        showToast("error", "A valid recipient email address is required for Email OTP verification.");
+        return;
+      }
+    }
+
+    if ((shareAuthMethod === "PASSWORD" || shareAuthMethod === "BOTH") && !sharePassword) {
+      showToast("error", "Please configure an access password for Password Protection.");
+      return;
+    }
+
     try {
       // Calculate Expiry Date based on chosen preset
       let expiryDate: Date | null = new Date();
@@ -383,6 +399,7 @@ export default function DashboardPage() {
       }
 
       const fileIdsPayload = shareSelectedDocIds.length > 0 ? shareSelectedDocIds : [shareModalFile.id];
+      const isOtpActive = shareAuthMethod === "EMAIL_OTP" || shareAuthMethod === "BOTH";
 
       const res = await fetch("/api/share/create", {
         method: "POST",
@@ -391,11 +408,12 @@ export default function DashboardPage() {
           fileIds: fileIdsPayload,
           fileId: fileIdsPayload[0],
           transferMode: shareTransferMode,
+          authMethod: shareAuthMethod,
           recipientEmail: shareRecipientEmail.trim() || null,
           expiresAt: expiryDate ? expiryDate.toISOString() : null,
           maxDownloads: shareMaxDownloads ? parseInt(shareMaxDownloads) : null,
-          password: sharePassword || null,
-          otpEnabled: shareOtpEnabled,
+          password: (shareAuthMethod === "PASSWORD" || shareAuthMethod === "BOTH") ? sharePassword : null,
+          otpEnabled: isOtpActive,
           allowedIps: shareAllowedIps || null,
           allowedGeos: shareAllowedGeos || null,
           watermarkText: shareWatermarkText || null,
@@ -1689,22 +1707,134 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
-                  {/* Recipient Email Binding */}
-                  <div>
-                    <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-wider mb-2">
-                      Designated Recipient Email (Optional Binding)
+                  {/* AUTHENTICATION METHOD SELECTOR */}
+                  <div className="space-y-2">
+                    <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-wider font-bold flex items-center justify-between">
+                      <span>Authentication Method</span>
+                      <span className="text-[9px] text-indigo-400 font-normal">Access Barrier</span>
                     </label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-3 w-4 h-4 text-text-secondary" />
-                      <input
-                        type="email"
-                        placeholder="e.g. partner@enterprise.com (Only this email can access)"
-                        value={shareRecipientEmail}
-                        onChange={(e) => setShareRecipientEmail(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:border-indigo-500/50 outline-none"
-                      />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        {
+                          id: "NONE",
+                          title: "Direct Access",
+                          desc: "No password or OTP",
+                          icon: Unlock,
+                        },
+                        {
+                          id: "PASSWORD",
+                          title: "Password",
+                          desc: "Fixed link password",
+                          icon: Lock,
+                        },
+                        {
+                          id: "EMAIL_OTP",
+                          title: "Email OTP",
+                          desc: "5-min time-limited code",
+                          icon: Mail,
+                        },
+                        {
+                          id: "BOTH",
+                          title: "Password + OTP",
+                          desc: "Dual multi-factor barrier",
+                          icon: ShieldCheck,
+                        },
+                      ].map((item) => {
+                        const Icon = item.icon;
+                        const isSelected = shareAuthMethod === item.id;
+                        return (
+                          <div
+                            key={item.id}
+                            onClick={() => setShareAuthMethod(item.id as any)}
+                            className={`p-2.5 rounded-xl border cursor-pointer font-mono transition-all flex flex-col justify-between ${
+                              isSelected
+                                ? "bg-indigo-600/15 border-indigo-500 text-indigo-400 shadow-sm shadow-indigo-500/10"
+                                : "bg-cyber-dark border-border-primary text-text-secondary hover:border-indigo-500/30"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-bold flex items-center gap-1.5 text-text-primary">
+                                <Icon className={`w-3.5 h-3.5 ${isSelected ? "text-indigo-400" : "text-text-secondary"}`} />
+                                {item.title}
+                              </span>
+                              <input
+                                type="radio"
+                                name="authMethod"
+                                checked={isSelected}
+                                onChange={() => setShareAuthMethod(item.id as any)}
+                                className="accent-indigo-500"
+                              />
+                            </div>
+                            <span className="text-[10px] text-text-secondary">{item.desc}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
+
+                  {/* Recipient Email Binding (Mandatory for EMAIL_OTP or BOTH, Optional for NONE/PASSWORD) */}
+                  {(shareAuthMethod === "EMAIL_OTP" || shareAuthMethod === "BOTH") ? (
+                    <div className="space-y-2 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-xl">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-[10px] font-mono text-indigo-400 uppercase tracking-wider font-bold flex items-center gap-1.5">
+                          <Mail className="w-3.5 h-3.5 text-indigo-400" />
+                          Designated Recipient Email (Required)
+                        </label>
+                        <span className="text-[9px] font-mono text-emerald-400 font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                          OTP Bound
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-3 w-4 h-4 text-text-secondary" />
+                        <input
+                          type="email"
+                          required
+                          placeholder="recipient@example.com (Mandatory for OTP dispatch)"
+                          value={shareRecipientEmail}
+                          onChange={(e) => setShareRecipientEmail(e.target.value)}
+                          className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-cyber-dark border border-indigo-500/40 text-xs font-mono text-text-primary focus:border-indigo-400 outline-none"
+                        />
+                      </div>
+                      <p className="text-[10px] font-mono text-text-secondary">
+                        🔒 Link bound to recipient email • Recipient must verify a 6-digit OTP (5-minute validity) delivered to this address.
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-wider mb-2">
+                        Designated Recipient Email (Optional Binding)
+                      </label>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-3 w-4 h-4 text-text-secondary" />
+                        <input
+                          type="email"
+                          placeholder="e.g. partner@enterprise.com (Only this email can access)"
+                          value={shareRecipientEmail}
+                          onChange={(e) => setShareRecipientEmail(e.target.value)}
+                          className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:border-indigo-500/50 outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Password Input (Mandatory if PASSWORD or BOTH) */}
+                  {(shareAuthMethod === "PASSWORD" || shareAuthMethod === "BOTH") && (
+                    <div className="space-y-1.5 p-3 bg-cyber-dark border border-indigo-500/30 rounded-xl">
+                      <label className="block text-[10px] font-mono text-indigo-400 uppercase tracking-wider font-bold flex items-center gap-1.5">
+                        <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                        Link Security Password (Required)
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        placeholder="Enter link password for recipient"
+                        value={sharePassword}
+                        onChange={(e) => setSharePassword(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-cyber-card border border-border-primary text-xs font-mono text-text-primary focus:border-indigo-500/50 outline-none"
+                      />
+                    </div>
+                  )}
 
                   {/* Expiration Presets */}
                   <div>
@@ -1769,34 +1899,6 @@ export default function DashboardPage() {
                         </button>
                       ))}
                     </div>
-                  </div>
-
-                  {/* Security Barrier: Password */}
-                  <div>
-                    <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-wider mb-2">
-                      Access Password Barrier (Optional)
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="Optional link password"
-                      value={sharePassword}
-                      onChange={(e) => setSharePassword(e.target.value)}
-                      className="w-full p-2.5 rounded-xl bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:border-indigo-500/50 outline-none"
-                    />
-                  </div>
-
-                  {/* Security Barrier: OTP Challenge */}
-                  <div className="flex items-center gap-3 p-3 bg-cyber-dark border border-border-primary rounded-xl">
-                    <input
-                      type="checkbox"
-                      id="otp-check"
-                      checked={shareOtpEnabled}
-                      onChange={(e) => setShareOtpEnabled(e.target.checked)}
-                      className="w-4 h-4 accent-indigo-500 rounded"
-                    />
-                    <label htmlFor="otp-check" className="text-xs font-mono text-text-primary cursor-pointer">
-                      Enforce Simulated OTP Multi-Factor Authentication
-                    </label>
                   </div>
 
                   {/* Allowed Geos */}
