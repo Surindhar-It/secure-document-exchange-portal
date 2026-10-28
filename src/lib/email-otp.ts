@@ -82,7 +82,16 @@ function createEmailTransporter() {
   const host = process.env.SMTP_HOST?.trim();
   const port = parseInt(process.env.SMTP_PORT || "587");
   const user = process.env.SMTP_USER?.trim();
-  const pass = process.env.SMTP_PASS?.trim();
+  let pass = process.env.SMTP_PASS?.trim();
+
+  // Strip wrapping quotes if user pasted `"..."`
+  if (pass) {
+    pass = pass.replace(/^["']|["']$/g, "").trim();
+    // Gmail App Passwords are 16 characters often grouped with spaces (e.g. "slor mnth lbxq atgj")
+    if (service?.toLowerCase() === "gmail" || host?.toLowerCase().includes("gmail")) {
+      pass = pass.replace(/\s+/g, "");
+    }
+  }
 
   // If credentials are blank or placeholders, do not attempt network connections
   if (!isConfigured(user) || !isConfigured(pass)) {
