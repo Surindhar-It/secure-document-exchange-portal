@@ -175,25 +175,55 @@ export async function evaluateAccessPolicy(
     };
   }
 
+  // Pre-validate OTP authorization session token (if supplied)
+  let isSessionValid = false;
+  let sessionRecipientEmail: string | null = null;
+
+  if (sessionToken && sessionToken.length >= 32) {
+    const validOtpSession = await db.emailOtp.findFirst({
+      where: {
+        shareLinkId: link.id,
+        sessionToken,
+        sessionExpiresAt: { gte: new Date() },
+      },
+    });
+
+    if (validOtpSession) {
+      isSessionValid = true;
+      sessionRecipientEmail = validOtpSession.recipientEmail.toLowerCase().trim();
+    }
+  }
+
   // 6. Recipient Binding Verification
   if (link.recipientEmail) {
-    if (!claimedEmail) {
-      return {
-        granted: false,
-        status: "RECIPIENT_MISMATCH",
-        reason: "This document is bound to a specific recipient email. Identity verification required.",
-        link,
-        riskAssessment,
-      };
-    }
-    if (link.recipientEmail.toLowerCase().trim() !== claimedEmail.toLowerCase().trim()) {
-      return {
-        granted: false,
-        status: "RECIPIENT_MISMATCH",
-        reason: "Access denied: Your identity does not match the designated recipient for this secure transfer.",
-        link,
-        riskAssessment,
-      };
+    const targetRecipient = link.recipientEmail.toLowerCase().trim();
+
+    // If recipient has already verified identity through a valid OTP session token:
+    if (isSessionValid && sessionRecipientEmail === targetRecipient) {
+      // Identity successfully verified via OTP session!
+    } else {
+      const effectiveEmail = (claimedEmail || sessionRecipientEmail)?.toLowerCase().trim();
+      if (!effectiveEmail) {
+        const usesOtp = link.authMethod === "EMAIL_OTP" || link.authMethod === "BOTH" || link.otpEnabled;
+        return {
+          granted: false,
+          status: usesOtp ? "OTP_REQUIRED" : "RECIPIENT_MISMATCH",
+          reason: usesOtp
+            ? "Email OTP verification required to authorize designated recipient."
+            : "This document is bound to a specific recipient email. Identity verification required.",
+          link,
+          riskAssessment,
+        };
+      }
+      if (effectiveEmail !== targetRecipient) {
+        return {
+          granted: false,
+          status: "RECIPIENT_MISMATCH",
+          reason: "Access denied: Your identity does not match the designated recipient for this secure transfer.",
+          link,
+          riskAssessment,
+        };
+      }
     }
   }
 
@@ -221,16 +251,8 @@ export async function evaluateAccessPolicy(
   }
 
   // 8. OTP Verification (if required or enforced by risk level)
-  const requireOtp = link.otpEnabled || riskAssessment.level === "MEDIUM";
+  const requireOtp = link.otpEnabled || link.authMethod === "EMAIL_OTP" || link.authMethod === "BOTH" || riskAssessment.level === "MEDIUM";
   if (requireOtp) {
-    let isSessionValid = false;
-
-    // Check if client provided a verified session authorization token
-    if (sessionToken) {
-      const { validateOTPSessionToken } = await import("./email-otp");
-      isSessionValid = await validateOTPSessionToken(link.id, sessionToken);
-    }
-
     if (!isSessionValid) {
       if (!otpCode) {
         return {

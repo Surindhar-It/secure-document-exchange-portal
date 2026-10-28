@@ -206,7 +206,7 @@ export default function DocumentRecoveryPage() {
         otpCode: otpInput || null,
         sessionToken: otpSessionToken || null,
         geo: geoCountry,
-        email: claimedEmail || null,
+        email: claimedEmail || linkMeta?.recipientEmail || null,
       }),
     });
 
@@ -468,6 +468,9 @@ export default function DocumentRecoveryPage() {
                   onVerified={(token) => {
                     setOtpSessionToken(token);
                     setIsOtpVerified(true);
+                    if (linkMeta?.recipientEmail) {
+                      setClaimedEmail(linkMeta.recipientEmail);
+                    }
                     setRecoveryStatus("VERIFICATION_SUCCESSFUL");
                     setStatusMessage("Email OTP verified. Ready to authorize document recovery.");
                   }}
