@@ -100,7 +100,7 @@ export default function EmailOtpVerificationCard({
     setIsExpired(false);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
 
     try {
       const res = await fetch("/api/share/download/otp/send", {
@@ -137,7 +137,7 @@ export default function EmailOtpVerificationCard({
     } catch (err: unknown) {
       clearTimeout(timeoutId);
       const isAbort = (err instanceof DOMException && err.name === "AbortError") || (err instanceof Error && err.name === "AbortError");
-      const msg = isAbort ? "Request timed out after 10 seconds. Check network or SMTP settings." : (err instanceof Error ? err.message : String(err));
+      const msg = isAbort ? "Request timed out. Check network or email service settings." : (err instanceof Error ? err.message : String(err));
       setErrorMessage(msg);
     } finally {
       setIsSending(false);

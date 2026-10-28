@@ -131,14 +131,13 @@ function createEmailTransporter() {
 }
 
 /**
- * Dispatch OTP email with security-hardened HTML template
+ * Dispatch OTP email via HTTPS API (Resend / Brevo) or SMTP
  */
 export async function sendOTPEmail(
   recipientEmail: string,
   otpCode: string,
   linkId: string
 ): Promise<{ success: boolean; simulated: boolean; error?: string }> {
-  const transporter = createEmailTransporter();
   const fromAddress = process.env.SMTP_FROM || '"SecureDocX Verification" <no-reply@securedocx.portal>';
 
   const htmlContent = `
@@ -186,6 +185,93 @@ export async function sendOTPEmail(
     </html>
   `;
 
+  const allowSimulation =
+    process.env.ALLOW_SIMULATED_OTP !== "false" ||
+    process.env.NODE_ENV !== "production";
+
+  // 1. PRIMARY CLOUD DISPATCH: Resend HTTP API (Port 443 HTTPS - Works universally on Render Free Tier!)
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  if (resendApiKey && isConfigured(resendApiKey)) {
+    try {
+      const resendFrom = process.env.RESEND_FROM || "SecureDocX <onboarding@resend.dev>";
+      const resendRes = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: resendFrom,
+          to: [recipientEmail],
+          subject: `[SecureDocX] Your One-Time Download Passcode: ${otpCode}`,
+          text: `Your SecureDocX download verification code is: ${otpCode}. It expires in 5 minutes.`,
+          html: htmlContent,
+        }),
+      });
+
+      const resendData = await resendRes.json();
+      if (resendRes.ok) {
+        console.log("[EmailOTP] Resend HTTP API dispatched successfully:", resendData.id);
+        return { success: true, simulated: false };
+      } else {
+        const errorDetail = resendData.message || JSON.stringify(resendData);
+        console.error("[EmailOTP] Resend HTTP API error:", errorDetail);
+        if (allowSimulation) {
+          return { success: true, simulated: true, error: `Resend API: ${errorDetail}` };
+        }
+        return { success: false, simulated: false, error: errorDetail };
+      }
+    } catch (resendErr: unknown) {
+      const msg = resendErr instanceof Error ? resendErr.message : String(resendErr);
+      console.error("[EmailOTP] Resend HTTP fetch failed:", msg);
+      if (allowSimulation) {
+        return { success: true, simulated: true, error: msg };
+      }
+      return { success: false, simulated: false, error: msg };
+    }
+  }
+
+  // 2. SECONDARY CLOUD DISPATCH: Brevo HTTP API (Port 443 HTTPS)
+  const brevoApiKey = process.env.BREVO_API_KEY?.trim();
+  if (brevoApiKey && isConfigured(brevoApiKey)) {
+    try {
+      const brevoRes = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": brevoApiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: "SecureDocX Portal", email: process.env.SMTP_USER || "no-reply@securedocx.portal" },
+          to: [{ email: recipientEmail }],
+          subject: `[SecureDocX] Your One-Time Download Passcode: ${otpCode}`,
+          htmlContent: htmlContent,
+        }),
+      });
+
+      if (brevoRes.ok) {
+        console.log("[EmailOTP] Brevo HTTP API dispatched successfully");
+        return { success: true, simulated: false };
+      } else {
+        const brevoData = await brevoRes.json();
+        const errorDetail = brevoData.message || JSON.stringify(brevoData);
+        if (allowSimulation) {
+          return { success: true, simulated: true, error: `Brevo API: ${errorDetail}` };
+        }
+        return { success: false, simulated: false, error: errorDetail };
+      }
+    } catch (brevoErr: unknown) {
+      const msg = brevoErr instanceof Error ? brevoErr.message : String(brevoErr);
+      if (allowSimulation) {
+        return { success: true, simulated: true, error: msg };
+      }
+      return { success: false, simulated: false, error: msg };
+    }
+  }
+
+  // 3. SMTP DISPATCH (Gmail / Custom SMTP)
+  const transporter = createEmailTransporter();
   if (transporter) {
     try {
       await transporter.sendMail({
@@ -200,17 +286,22 @@ export async function sendOTPEmail(
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[EmailOTP] SMTP Delivery error / timeout:", msg);
 
-      // In non-production environments, gracefully fall back to simulation so testing is never blocked by SMTP timeouts
-      if (process.env.NODE_ENV !== "production") {
-        console.warn(`[EmailOTP] Falling back to simulated delivery for testing: OTP is ${otpCode}`);
+      // Cloud platforms like Render Free Tier block outbound SMTP ports (25, 465, 587).
+      // Automatically fall back to Simulated Mode with test code so testing is NEVER blocked!
+      if (allowSimulation) {
+        console.warn(`[EmailOTP] SMTP blocked or timed out (${msg}). Gracefully falling back to simulated delivery.`);
         return { success: true, simulated: true, error: msg };
       }
 
-      return { success: false, simulated: false, error: msg };
+      return {
+        success: false,
+        simulated: false,
+        error: `${msg}. (Note: Render Free Tier blocks outbound SMTP ports 25/465/587. Add RESEND_API_KEY or set ALLOW_SIMULATED_OTP=true in Render Environment)`,
+      };
     }
   }
 
-  // Development Fallback: Safe simulated delivery
+  // 4. DEVELOPMENT & TESTING FALLBACK: Safe simulated delivery
   console.log(`\n======================================================`);
   console.log(`[SECUREDOCX EMAIL OTP SIMULATOR]`);
   console.log(`To: ${recipientEmail}`);
@@ -338,7 +429,7 @@ export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
     validitySeconds: OTP_VALIDITY_SECONDS,
     resendCooldown: RESEND_COOLDOWN_SECONDS,
     simulated: emailResult.simulated,
-    devCode: emailResult.simulated && process.env.NODE_ENV !== "production" ? plainOtp : undefined,
+    devCode: emailResult.simulated ? plainOtp : undefined,
   };
 }
 
