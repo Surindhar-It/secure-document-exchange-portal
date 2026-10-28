@@ -101,6 +101,7 @@ export async function POST(req: NextRequest) {
         fileSize,
         mimeType,
         storagePath,
+        payloadBytes: fileBuffer,
         signature: ciphertextHash,
         originalHash: originalHash || null,
         encryptionAlgo,

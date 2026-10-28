@@ -4,6 +4,7 @@ import { recordAuditEvent } from "@/lib/audit";
 import { evaluateAccessThreat, resolveClientIp } from "@/lib/security";
 import { evaluateAccessPolicy } from "@/lib/access-policy";
 import fs from "fs";
+import path from "path";
 
 // 1. GET: Fetch Share Link metadata, policy barriers, and transfer mode details
 export async function GET(req: NextRequest) {
@@ -239,10 +240,38 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No document attached to this transfer link." }, { status: 404 });
     }
 
-    const filePath = targetFile.storagePath;
+    // Read the encrypted file bytes (from local disk, relative storage, or cloud Supabase storage)
+    let fileBuffer: Buffer | null = null;
 
-    if (!fs.existsSync(filePath)) {
-      return NextResponse.json({ error: "Encrypted payload missing on server" }, { status: 404 });
+    // 1. Direct path check
+    if (targetFile.storagePath && fs.existsSync(targetFile.storagePath)) {
+      try {
+        fileBuffer = fs.readFileSync(targetFile.storagePath);
+      } catch (readErr) {
+        console.warn("Direct storagePath read failed:", readErr);
+      }
+    }
+
+    // 2. Relative storage check (handles Windows vs Linux / Render working directory differences)
+    if (!fileBuffer && targetFile.storagePath) {
+      const baseName = path.basename(targetFile.storagePath);
+      const localRelPath = path.join(process.cwd(), "storage", "encrypted", baseName);
+      if (fs.existsSync(localRelPath)) {
+        try {
+          fileBuffer = fs.readFileSync(localRelPath);
+        } catch (readErr) {
+          console.warn("Relative storage read failed:", readErr);
+        }
+      }
+    }
+
+    // 3. Cloud persistence fallback: stream payloadBytes directly from Supabase PostgreSQL
+    if (!fileBuffer && targetFile.payloadBytes) {
+      fileBuffer = Buffer.from(targetFile.payloadBytes);
+    }
+
+    if (!fileBuffer || fileBuffer.length === 0) {
+      return NextResponse.json({ error: "Encrypted payload missing on server. Please re-upload document." }, { status: 404 });
     }
 
     // Record verified download completion in database and blockchain
@@ -274,9 +303,6 @@ export async function POST(req: NextRequest) {
       details: { fileSizeMb: targetFile.fileSize / (1024 * 1024) },
     });
 
-    // Read the encrypted file bytes
-    const fileBuffer = fs.readFileSync(filePath);
-
     // Safely unwrap Data Encryption Key (DEK) via KMS for authorized recipient
     let unwrappedDekHex: string | null = null;
     if (targetFile.encryptedKeyPackage) {
@@ -288,7 +314,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return new NextResponse(fileBuffer, {
+    return new NextResponse(new Uint8Array(fileBuffer), {
       status: 200,
       headers: {
         "Content-Type": "application/octet-stream",

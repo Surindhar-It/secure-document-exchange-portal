@@ -37,6 +37,7 @@ model FileMetadata {
   fileSize    Int         // Size of encrypted payload in bytes
   mimeType    String      // MIME type of the file
   storagePath String      // Local file path where encrypted file is stored
+  payloadBytes Bytes?     // Cloud-persisted encrypted payload (ensures cross-platform availability)
   signature   String?     // Client-side SHA-256 integrity signature of ciphertext
   originalHash String?    // SHA-256 integrity hash of original unencrypted file
   encryptionAlgo String   @default("AES-256-GCM") // Versioned cryptographic algorithm
