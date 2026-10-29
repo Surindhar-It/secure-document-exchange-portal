@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { writeAuditLog } from "@/lib/audit";
-import { evaluateAccessThreat, resolveClientIp } from "@/lib/security";
+import { resolveClientIp } from "@/lib/security";
+import { generateOTP, hashOTP, maskEmail, sendLoginEmailOTP } from "@/lib/email-otp";
 import {
   generateSMSOTP,
   hashSMSOTP,
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
         userEmail: identifier,
         ipAddress: ip,
         userAgent,
-        details: { reason: "User not found for SMS OTP login" },
+        details: { reason: "User not found for sign-in OTP dispatch" },
       });
       return NextResponse.json(
         { error: "No account found matching this email or phone number." },
@@ -52,15 +53,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!user.phoneNumber) {
-      return NextResponse.json(
-        { error: "No mobile phone number is linked to this account for SMS OTP login." },
-        { status: 400 }
-      );
-    }
-
     // Cooldown check: 60 seconds from previous OTP
-    const latestOtp = await db.loginSmsOtp.findFirst({
+    const latestOtp = await db.loginEmailOtp.findFirst({
       where: { userId: user.id },
       orderBy: { createdAt: "desc" },
     });
@@ -69,26 +63,26 @@ export async function POST(req: NextRequest) {
     if (latestOtp && now.getTime() - latestOtp.createdAt.getTime() < 60000) {
       const waitSeconds = Math.ceil((60000 - (now.getTime() - latestOtp.createdAt.getTime())) / 1000);
       return NextResponse.json(
-        { error: `Please wait ${waitSeconds}s before requesting a new login SMS code.` },
+        { error: `Please wait ${waitSeconds}s before requesting a new verification code.` },
         { status: 429 }
       );
     }
 
-    // Invalidate existing unused login OTPs
-    await db.loginSmsOtp.updateMany({
+    // Invalidate existing unused login Email OTPs
+    await db.loginEmailOtp.updateMany({
       where: { userId: user.id, isUsed: false },
       data: { isUsed: true },
     });
 
     // Generate 6-digit OTP
-    const plainOtp = generateSMSOTP();
-    const otpHash = hashSMSOTP(plainOtp);
+    const plainOtp = generateOTP();
+    const otpHash = hashOTP(plainOtp);
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 mins
 
-    await db.loginSmsOtp.create({
+    await db.loginEmailOtp.create({
       data: {
         userId: user.id,
-        phoneNumber: user.phoneNumber,
+        email: user.email,
         otpHash,
         expiresAt,
         attempts: 0,
@@ -97,9 +91,15 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Send SMS via TextBee
-    const smsMessage = `Your SecureDocX sign-in verification code is: ${plainOtp}. Valid for 5 minutes. Do not share this code.`;
-    const smsResult = await sendTextBeeSMS(user.phoneNumber, smsMessage);
+    // 1. Send OTP to registered email address
+    const emailResult = await sendLoginEmailOTP(user.email, plainOtp);
+
+    // 2. Also dispatch via SMS if phone number is attached to account
+    let smsResult = { success: false, simulated: false };
+    if (user.phoneNumber) {
+      const smsMessage = `Your SecureDocX sign-in verification code is: ${plainOtp}. Valid for 5 minutes. Do not share this code.`;
+      smsResult = await sendTextBeeSMS(user.phoneNumber, smsMessage);
+    }
 
     await writeAuditLog({
       action: "LOGIN_OTP_REQUESTED",
@@ -108,23 +108,24 @@ export async function POST(req: NextRequest) {
       ipAddress: ip,
       userAgent,
       details: {
-        maskedPhone: maskPhoneNumber(user.phoneNumber),
-        simulated: smsResult.simulated,
+        maskedEmail: maskEmail(user.email),
+        maskedPhone: user.phoneNumber ? maskPhoneNumber(user.phoneNumber) : null,
+        emailSimulated: emailResult.simulated,
+        smsSimulated: smsResult.simulated,
       },
     });
 
     return NextResponse.json({
       success: true,
-      message: smsResult.simulated
-        ? `Sign-in SMS OTP generated in test mode for ${maskPhoneNumber(user.phoneNumber)}.`
-        : `A verification code has been dispatched via TextBee SMS to ${maskPhoneNumber(user.phoneNumber)}.`,
-      maskedPhone: maskPhoneNumber(user.phoneNumber),
-      simulated: smsResult.simulated,
-      devCode: smsResult.simulated ? plainOtp : undefined,
+      message: `A 6-digit verification code has been dispatched to your email (${maskEmail(user.email)})${user.phoneNumber ? ` and SMS (${maskPhoneNumber(user.phoneNumber)})` : ""}.`,
+      maskedEmail: maskEmail(user.email),
+      maskedPhone: user.phoneNumber ? maskPhoneNumber(user.phoneNumber) : undefined,
+      simulated: emailResult.simulated,
+      devCode: emailResult.simulated ? plainOtp : undefined,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[Login:SendOTP] Error:", msg);
-    return NextResponse.json({ error: "Failed to dispatch SMS verification code." }, { status: 500 });
+    return NextResponse.json({ error: "Failed to dispatch verification code." }, { status: 500 });
   }
 }

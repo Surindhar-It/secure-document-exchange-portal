@@ -3,10 +3,8 @@ import { db } from "@/lib/db";
 import { signJwtToken } from "@/lib/auth";
 import { writeAuditLog } from "@/lib/audit";
 import { resolveClientIp } from "@/lib/security";
-import {
-  verifySMSOTPHash,
-  formatPhoneNumber,
-} from "@/lib/textbee";
+import { verifyOTPHash, maskEmail } from "@/lib/email-otp";
+import { verifySMSOTPHash, formatPhoneNumber } from "@/lib/textbee";
 
 export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
@@ -19,7 +17,7 @@ export async function POST(req: NextRequest) {
 
     if (!identifier || !otpCode) {
       return NextResponse.json(
-        { error: "Account identifier and SMS verification code are required." },
+        { error: "Account identifier and verification code are required." },
         { status: 400 }
       );
     }
@@ -41,14 +39,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User account not found." }, { status: 404 });
     }
 
-    // Find latest active OTP
-    const activeOtp = await db.loginSmsOtp.findFirst({
+    // Find latest active OTP: Check LoginEmailOtp first, then fallback to LoginSmsOtp
+    const activeEmailOtp = await db.loginEmailOtp.findFirst({
       where: {
         userId: user.id,
         isUsed: false,
       },
       orderBy: { createdAt: "desc" },
     });
+
+    const activeSmsOtp = !activeEmailOtp
+      ? await db.loginSmsOtp.findFirst({
+          where: {
+            userId: user.id,
+            isUsed: false,
+          },
+          orderBy: { createdAt: "desc" },
+        })
+      : null;
+
+    const activeOtp = activeEmailOtp || activeSmsOtp;
+    const isEmailType = !!activeEmailOtp;
 
     if (!activeOtp) {
       return NextResponse.json(
@@ -59,39 +70,49 @@ export async function POST(req: NextRequest) {
 
     const now = new Date();
     if (now > activeOtp.expiresAt) {
-      await db.loginSmsOtp.update({
-        where: { id: activeOtp.id },
-        data: { isUsed: true },
-      });
+      if (isEmailType) {
+        await db.loginEmailOtp.update({ where: { id: activeOtp.id }, data: { isUsed: true } });
+      } else {
+        await db.loginSmsOtp.update({ where: { id: activeOtp.id }, data: { isUsed: true } });
+      }
       return NextResponse.json(
-        { error: "SMS verification code has expired after 5 minutes. Please request a new code." },
+        { error: "Verification code has expired after 5 minutes. Please request a new code." },
         { status: 400 }
       );
     }
 
     if (activeOtp.attempts >= activeOtp.maxAttempts) {
-      await db.loginSmsOtp.update({
-        where: { id: activeOtp.id },
-        data: { isUsed: true },
-      });
+      if (isEmailType) {
+        await db.loginEmailOtp.update({ where: { id: activeOtp.id }, data: { isUsed: true } });
+      } else {
+        await db.loginSmsOtp.update({ where: { id: activeOtp.id }, data: { isUsed: true } });
+      }
       return NextResponse.json(
         { error: "Maximum verification attempts exceeded. Code has been locked." },
         { status: 400 }
       );
     }
 
-    const isValid = verifySMSOTPHash(otpCode, activeOtp.otpHash);
+    // Verify hash based on OTP type
+    const isValid = isEmailType
+      ? verifyOTPHash(otpCode, activeOtp.otpHash)
+      : verifySMSOTPHash(otpCode, activeOtp.otpHash);
 
     if (!isValid) {
       const newAttempts = activeOtp.attempts + 1;
       const locked = newAttempts >= activeOtp.maxAttempts;
-      await db.loginSmsOtp.update({
-        where: { id: activeOtp.id },
-        data: {
-          attempts: newAttempts,
-          isUsed: locked,
-        },
-      });
+
+      if (isEmailType) {
+        await db.loginEmailOtp.update({
+          where: { id: activeOtp.id },
+          data: { attempts: newAttempts, isUsed: locked },
+        });
+      } else {
+        await db.loginSmsOtp.update({
+          where: { id: activeOtp.id },
+          data: { attempts: newAttempts, isUsed: locked },
+        });
+      }
 
       return NextResponse.json(
         {
@@ -104,26 +125,27 @@ export async function POST(req: NextRequest) {
     }
 
     // Mark OTP as used
-    await db.loginSmsOtp.update({
-      where: { id: activeOtp.id },
-      data: { isUsed: true },
-    });
+    if (isEmailType) {
+      await db.loginEmailOtp.update({ where: { id: activeOtp.id }, data: { isUsed: true } });
+    } else {
+      await db.loginSmsOtp.update({ where: { id: activeOtp.id }, data: { isUsed: true } });
+    }
 
     // Write audit log
     await writeAuditLog({
-      action: "LOGIN_SUCCESS_SMS_OTP",
+      action: "LOGIN_SUCCESS",
       userId: user.id,
       userEmail: user.email,
       ipAddress: ip,
       userAgent,
-      details: { via: "TEXTBEE_SMS_OTP" },
+      details: { via: isEmailType ? "EMAIL_OTP" : "SMS_OTP" },
     });
 
     // Sign JWT and set HTTP-only cookie
     const token = signJwtToken({ id: user.id, email: user.email });
     const response = NextResponse.json({
       success: true,
-      message: "SMS OTP verified successfully. Welcome back!",
+      message: "Sign-in verified successfully. Welcome back!",
       user: { id: user.id, email: user.email, phoneNumber: user.phoneNumber, publicKey: user.publicKey },
     });
 
@@ -139,6 +161,6 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[Login:VerifyOTP] Error:", msg);
-    return NextResponse.json({ error: "Failed to verify SMS verification code." }, { status: 500 });
+    return NextResponse.json({ error: "Failed to verify sign-in code." }, { status: 500 });
   }
 }

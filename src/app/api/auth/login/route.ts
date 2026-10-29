@@ -5,6 +5,7 @@ import { signJwtToken } from "@/lib/auth";
 import { writeAuditLog } from "@/lib/audit";
 import { evaluateAccessThreat, resolveClientIp } from "@/lib/security";
 import { formatPhoneNumber } from "@/lib/textbee";
+import { generateOTP, hashOTP, maskEmail, sendLoginEmailOTP } from "@/lib/email-otp";
 
 export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
@@ -88,40 +89,54 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 
-    // If MFA is enabled, require MFA completion step
-    if (user.mfaEnabled) {
-      return NextResponse.json({
-        mfaRequired: true,
+    // Password is valid! Enforce Email OTP for every login
+    const plainOtp = generateOTP();
+    const otpHash = hashOTP(plainOtp);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    // Invalidate prior unused login OTPs for this user
+    await db.loginEmailOtp.updateMany({
+      where: { userId: user.id, isUsed: false },
+      data: { isUsed: true },
+    });
+
+    // Store new login OTP record
+    await db.loginEmailOtp.create({
+      data: {
         userId: user.id,
         email: user.email,
-      });
-    }
+        otpHash,
+        expiresAt,
+        attempts: 0,
+        maxAttempts: 5,
+        isUsed: false,
+      },
+    });
 
-    // Write login success audit block
+    // Send OTP to user's registered email address
+    const emailResult = await sendLoginEmailOTP(user.email, plainOtp);
+
     await writeAuditLog({
-      action: "LOGIN_SUCCESS",
+      action: "LOGIN_OTP_SENT",
       userId: user.id,
       userEmail: user.email,
       ipAddress: ip,
       userAgent,
+      details: {
+        email: maskEmail(user.email),
+        simulated: emailResult.simulated,
+      },
     });
 
-    // Sign JWT and set HTTP-only cookie
-    const token = signJwtToken({ id: user.id, email: user.email });
-    const response = NextResponse.json({
+    return NextResponse.json({
       success: true,
-      user: { id: user.id, email: user.email, publicKey: user.publicKey },
+      otpRequired: true,
+      userId: user.id,
+      maskedEmail: maskEmail(user.email),
+      message: `Password verified. A 6-digit verification code has been sent to your email (${maskEmail(user.email)}).`,
+      simulated: emailResult.simulated,
+      devCode: emailResult.simulated ? plainOtp : undefined,
     });
-
-    response.cookies.set("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      path: "/",
-      maxAge: 7 * 24 * 60 * 60, // 7 days
-    });
-
-    return response;
   } catch (error: any) {
     console.error("Login error:", error);
     return NextResponse.json({ error: "An internal server error occurred" }, { status: 500 });

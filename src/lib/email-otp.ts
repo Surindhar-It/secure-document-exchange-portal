@@ -514,6 +514,188 @@ export async function sendPasswordResetEmailOTP(
 }
 
 /**
+ * Dispatch Login verification code to user's registered email address for two-factor login
+ */
+export async function sendLoginEmailOTP(
+  recipientEmail: string,
+  otpCode: string
+): Promise<{ success: boolean; simulated: boolean; error?: string }> {
+  const fromAddress = process.env.SMTP_FROM || '"SecureDocX Security" <no-reply@securedocx.portal>';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Sign-In Verification Code</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; margin: 0; }
+          .container { max-width: 520px; margin: 0 auto; background-color: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+          .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+          .badge { font-size: 11px; font-family: monospace; text-transform: uppercase; padding: 4px 10px; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); color: #818cf8; border-radius: 9999px; font-weight: bold; }
+          h1 { font-size: 20px; font-weight: 800; color: #ffffff; margin: 0 0 12px 0; }
+          p { font-size: 13px; line-height: 1.6; color: #9ca3af; margin: 0 0 20px 0; }
+          .otp-card { background: #0b0f19; border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center; margin: 24px 0; }
+          .otp-code { font-family: 'Courier New', Courier, monospace; font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #6366f1; }
+          .expiry-notice { font-size: 11px; color: #f59e0b; margin-top: 8px; font-family: monospace; }
+          .security-footer { border-top: 1px solid #1f2937; padding-top: 20px; margin-top: 24px; font-size: 11px; color: #6b7280; font-family: monospace; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="brand">
+            <span class="badge">SECUREDOCX • TWO-FACTOR SIGN-IN</span>
+          </div>
+          <h1>Account Login Verification Code</h1>
+          <p>
+            A sign-in attempt was initiated for your SecureDocX account. To authorize this session, enter the following one-time passcode:
+          </p>
+          <div class="otp-card">
+            <div class="otp-code">${otpCode}</div>
+            <div class="expiry-notice">⏱ Valid for 5 minutes (300 seconds) • Never share this code</div>
+          </div>
+          <p>
+            If you did not initiate this login request, please change your password immediately.
+          </p>
+          <div class="security-footer">
+            Security Standard: AES-256-GCM Ephemeral KMS Envelope &bull; Zero-Knowledge Architecture
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  const allowSimulation =
+    process.env.ALLOW_SIMULATED_OTP !== "false" ||
+    process.env.NODE_ENV !== "production";
+
+  let lastError = "";
+
+  // 1. PRIMARY DISPATCH: Nodemailer (Gmail SMTP / Custom SMTP)
+  const transporter = createEmailTransporter();
+  if (transporter) {
+    try {
+      const info = await transporter.sendMail({
+        from: fromAddress,
+        to: recipientEmail,
+        subject: `[SecureDocX] Your Sign-In Code: ${otpCode}`,
+        text: `Your SecureDocX sign-in verification code is: ${otpCode}. It expires in 5 minutes. Never share this code.`,
+        html: htmlContent,
+      });
+      console.log("[LoginEmailOTP] Nodemailer dispatched successfully:", info.messageId);
+      return { success: true, simulated: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[LoginEmailOTP] Nodemailer SMTP Delivery error:", msg);
+      lastError = `Gmail SMTP error: ${msg}`;
+    }
+  }
+
+  // 2. SECONDARY CLOUD DISPATCH: Brevo HTTP API (Port 443 HTTPS)
+  const brevoApiKey = process.env.BREVO_API_KEY?.trim();
+  if (brevoApiKey && isConfigured(brevoApiKey)) {
+    try {
+      const brevoRes = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": brevoApiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          sender: {
+            name: "SecureDocX Security",
+            email: process.env.BREVO_SENDER_EMAIL?.trim() || process.env.SMTP_USER?.trim() || "surindhar9f@gmail.com",
+          },
+          to: [{ email: recipientEmail }],
+          subject: `[SecureDocX] Your Sign-In Code: ${otpCode}`,
+          htmlContent: htmlContent,
+        }),
+      });
+
+      if (brevoRes.ok) {
+        console.log("[LoginEmailOTP] Brevo HTTP API dispatched successfully");
+        return { success: true, simulated: false };
+      } else {
+        const brevoData = await brevoRes.json();
+        const errDetail = brevoData.message || JSON.stringify(brevoData);
+        console.warn("[LoginEmailOTP] Brevo failed:", errDetail);
+        lastError = `Brevo API: ${errDetail}`;
+      }
+    } catch (brevoErr: unknown) {
+      const msg = brevoErr instanceof Error ? brevoErr.message : String(brevoErr);
+      console.warn("[LoginEmailOTP] Brevo failed:", msg);
+      lastError = `Brevo API error: ${msg}`;
+    }
+  }
+
+  // 3. TERTIARY CLOUD DISPATCH: Resend HTTP API
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  const isRealResendKey = resendApiKey && resendApiKey.startsWith("re_") && resendApiKey.length > 5;
+  if (isRealResendKey) {
+    try {
+      const resendFrom = process.env.RESEND_FROM || "SecureDocX <onboarding@resend.dev>";
+      const resendRes = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: resendFrom,
+          to: [recipientEmail],
+          subject: `[SecureDocX] Your Sign-In Code: ${otpCode}`,
+          text: `Your SecureDocX sign-in verification code is: ${otpCode}. It expires in 5 minutes. Never share this code.`,
+          html: htmlContent,
+        }),
+      });
+      const resendData = await resendRes.json();
+      if (resendRes.ok) {
+        console.log("[LoginEmailOTP] Resend HTTP API dispatched successfully");
+        return { success: true, simulated: false };
+      } else {
+        const errDetail = resendData.message || JSON.stringify(resendData);
+        console.warn("[LoginEmailOTP] Resend failed:", errDetail);
+        lastError = `Resend API: ${errDetail}`;
+      }
+    } catch (resendErr: unknown) {
+      const msg = resendErr instanceof Error ? resendErr.message : String(resendErr);
+      console.warn("[LoginEmailOTP] Resend failed:", msg);
+      lastError = `Resend API error: ${msg}`;
+    }
+  }
+
+  // 4. Fallback: Simulator in dev or when simulation allowed / Resend sandbox restricted
+  const isResendSandboxRestriction =
+    lastError.includes("You can only send testing emails to your own email address") ||
+    lastError.includes("resend.com/domains");
+
+  if (allowSimulation || isResendSandboxRestriction) {
+    const sandboxNotice = isResendSandboxRestriction
+      ? "Resend Sandbox Restriction: Resend Free tier only permits live emails to the account owner. Switched to test mode."
+      : undefined;
+
+    console.log(`\n======================================================`);
+    console.log(`[SECUREDOCX LOGIN EMAIL OTP SIMULATOR]`);
+    console.log(`To: ${recipientEmail}`);
+    console.log(`OTP Code: ${otpCode}`);
+    if (sandboxNotice) console.log(`Notice: ${sandboxNotice}`);
+    console.log(`======================================================\n`);
+    return {
+      success: true,
+      simulated: true,
+      error: sandboxNotice || (lastError ? `Notice: ${lastError}` : undefined),
+    };
+  }
+
+  return {
+    success: false,
+    simulated: false,
+    error: lastError || "Failed to dispatch sign-in email.",
+  };
+}
+
+/**
  * Service to generate and dispatch OTP to designated recipient
  */
 export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
