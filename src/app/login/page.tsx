@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Shield, Key, Mail, Lock, Fingerprint, ArrowRight, CheckCircle2, ShieldAlert, Smartphone, ArrowLeft, RefreshCw } from "lucide-react";
+import { Shield, Key, Mail, Lock, Fingerprint, ArrowRight, CheckCircle2, ShieldAlert, Smartphone, ArrowLeft, RefreshCw, ShieldCheck } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { startAuthentication } from "@simplewebauthn/browser";
 
@@ -39,6 +39,7 @@ export default function LoginPage() {
   const [fpRequiresPhone, setFpRequiresPhone] = useState(false);
   const [fpOtpCode, setFpOtpCode] = useState("");
   const [fpMaskedPhone, setFpMaskedPhone] = useState("");
+  const [fpMaskedEmail, setFpMaskedEmail] = useState("");
   const [fpResetToken, setFpResetToken] = useState("");
   const [fpNewPassword, setFpNewPassword] = useState("");
   const [fpConfirmPassword, setFpConfirmPassword] = useState("");
@@ -284,13 +285,14 @@ export default function LoginPage() {
         if (data.requiresPhoneInput) {
           setFpRequiresPhone(true);
         }
-        throw new Error(data.error || "Failed to send SMS OTP");
+        throw new Error(data.error || "Failed to send verification code");
       }
 
-      setFpMaskedPhone(data.maskedPhone);
+      if (data.maskedPhone) setFpMaskedPhone(data.maskedPhone);
+      if (data.maskedEmail) setFpMaskedEmail(data.maskedEmail);
       setFpStep("verify");
       setFpCooldown(60);
-      setSuccess(data.message || `SMS verification code dispatched via TextBee.`);
+      setSuccess(data.message || `Verification code dispatched to your email and phone.`);
 
       // 60-second resend cooldown timer
       const interval = setInterval(() => {
@@ -862,11 +864,11 @@ export default function LoginPage() {
                   <ArrowLeft className="w-3.5 h-3.5" /> Back to Sign In
                 </button>
                 <span className="text-[10px] font-mono font-bold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded flex items-center gap-1">
-                  <Smartphone className="w-3 h-3" /> TextBee SMS OTP
+                  <ShieldCheck className="w-3 h-3" /> Email & SMS OTP
                 </span>
               </div>
 
-              {/* STEP 1: Enter email or phone to receive SMS OTP */}
+              {/* STEP 1: Enter email or phone to receive OTP */}
               {fpStep === "request" && (
                 <form onSubmit={handleSendSmsOtp} className="space-y-4">
                   <div>
@@ -925,9 +927,9 @@ export default function LoginPage() {
                   )}
 
                   <div className="p-3 bg-indigo-500/5 border border-indigo-500/15 rounded-xl text-[11px] font-mono text-text-secondary flex gap-2.5 items-start">
-                    <Smartphone className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
+                    <Mail className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
                     <div>
-                      A 6-digit one-time code will be dispatched via <strong>TextBee SMS Gateway</strong> to your registered mobile device.
+                      A 6-digit one-time code will be dispatched to your registered <strong>email address</strong> and via <strong>TextBee SMS</strong> to your mobile device.
                     </div>
                   </div>
 
@@ -936,23 +938,25 @@ export default function LoginPage() {
                     disabled={loading}
                     className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
                   >
-                    {loading ? "Dispatching SMS..." : "Send SMS Verification Code"}{" "}
+                    {loading ? "Dispatching Code..." : "Send Verification Code"}{" "}
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 </form>
               )}
 
-              {/* STEP 2: Enter 6-digit SMS OTP */}
+              {/* STEP 2: Enter 6-digit OTP */}
               {fpStep === "verify" && (
                 <form onSubmit={handleVerifySmsOtp} className="space-y-4">
                   <div className="text-center space-y-1">
                     <div className="text-xs font-mono text-text-secondary">Code dispatched to</div>
-                    <div className="text-sm font-bold font-mono text-indigo-400">{fpMaskedPhone}</div>
+                    <div className="text-xs font-bold font-mono text-indigo-400">
+                      {fpMaskedEmail ? fpMaskedEmail : ""}{fpMaskedEmail && fpMaskedPhone ? " • " : ""}{fpMaskedPhone ? fpMaskedPhone : ""}
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-xs font-medium text-text-secondary mb-2 font-mono text-center">
-                      6-Digit SMS OTP
+                      6-Digit Verification Code
                     </label>
                     <input
                       type="text"
@@ -970,7 +974,7 @@ export default function LoginPage() {
                     disabled={loading || fpOtpCode.length !== 6}
                     className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all disabled:opacity-50"
                   >
-                    {loading ? "Verifying..." : "Verify SMS Code"} <ArrowRight className="w-4 h-4" />
+                    {loading ? "Verifying..." : "Verify Code"} <ArrowRight className="w-4 h-4" />
                   </button>
 
                   <div className="flex items-center justify-between pt-2">

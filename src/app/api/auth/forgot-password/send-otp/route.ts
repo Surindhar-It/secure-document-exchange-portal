@@ -9,6 +9,7 @@ import {
   formatPhoneNumber,
   sendTextBeeSMS,
 } from "@/lib/textbee";
+import { sendPasswordResetEmailOTP, maskEmail } from "@/lib/email-otp";
 
 export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Resolve target phone number
+    // Resolve target phone number if provided or already linked
     let targetPhone = user.phoneNumber;
     if (!targetPhone && phone) {
       targetPhone = formatPhoneNumber(phone);
@@ -53,16 +54,6 @@ export async function POST(req: NextRequest) {
         where: { id: user.id },
         data: { phoneNumber: targetPhone },
       });
-    }
-
-    if (!targetPhone) {
-      return NextResponse.json(
-        {
-          error: "No phone number is registered with this account.",
-          requiresPhoneInput: true,
-        },
-        { status: 400 }
-      );
     }
 
     // Check cooldown from latest OTP request (60 seconds)
@@ -75,7 +66,7 @@ export async function POST(req: NextRequest) {
     if (latestOtp && now.getTime() - latestOtp.createdAt.getTime() < 60000) {
       const waitSeconds = Math.ceil((60000 - (now.getTime() - latestOtp.createdAt.getTime())) / 1000);
       return NextResponse.json(
-        { error: `Please wait ${waitSeconds} second(s) before requesting a new SMS OTP.` },
+        { error: `Please wait ${waitSeconds} second(s) before requesting a new OTP.` },
         { status: 429 }
       );
     }
@@ -94,7 +85,7 @@ export async function POST(req: NextRequest) {
     await db.passwordResetOtp.create({
       data: {
         userId: user.id,
-        phoneNumber: targetPhone,
+        phoneNumber: targetPhone || user.email,
         otpHash,
         expiresAt,
         attempts: 0,
@@ -103,9 +94,32 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Dispatch SMS via TextBee
-    const smsMessage = `Your SecureDocX password reset verification code is: ${plainOtp}. Valid for 5 minutes. Never share this code with anyone.`;
-    const smsResult = await sendTextBeeSMS(targetPhone, smsMessage);
+    // 1. Dispatch SMS via TextBee (if phone available)
+    let smsResult: { success: boolean; simulated: boolean; error?: string } = { success: false, simulated: false };
+    if (targetPhone) {
+      const smsMessage = `Your SecureDocX password reset verification code is: ${plainOtp}. Valid for 5 minutes. Never share this code with anyone.`;
+      smsResult = await sendTextBeeSMS(targetPhone, smsMessage);
+    }
+
+    // 2. Dispatch Email OTP to registered email address
+    let emailResult: { success: boolean; simulated: boolean; error?: string } = { success: false, simulated: false };
+    if (user.email) {
+      emailResult = await sendPasswordResetEmailOTP(user.email, plainOtp);
+    }
+
+    const maskedPhone = targetPhone ? maskPhoneNumber(targetPhone) : null;
+    const maskedEmail = user.email ? maskEmail(user.email) : null;
+
+    let message = "";
+    if (maskedEmail && maskedPhone) {
+      message = `Verification code sent to your email (${maskedEmail}) and SMS (${maskedPhone}).`;
+    } else if (maskedEmail) {
+      message = `Verification code sent to your email (${maskedEmail}).`;
+    } else if (maskedPhone) {
+      message = `Verification code sent via SMS to ${maskedPhone}.`;
+    } else {
+      message = "Verification code generated successfully.";
+    }
 
     await recordAuditEvent({
       action: "PASSWORD_RESET_OTP_REQUESTED",
@@ -114,23 +128,24 @@ export async function POST(req: NextRequest) {
       ipAddress: ip,
       userAgent,
       details: {
-        maskedPhone: maskPhoneNumber(targetPhone),
-        simulated: smsResult.simulated,
+        maskedPhone,
+        maskedEmail,
+        smsSimulated: smsResult.simulated,
+        emailSimulated: emailResult.simulated,
       },
     });
 
     return NextResponse.json({
       success: true,
-      message: smsResult.simulated
-        ? `SMS OTP generated in test mode for ${maskPhoneNumber(targetPhone)}.`
-        : `A verification code has been dispatched via TextBee SMS to ${maskPhoneNumber(targetPhone)}.`,
-      maskedPhone: maskPhoneNumber(targetPhone),
-      simulated: smsResult.simulated,
-      devCode: smsResult.simulated ? plainOtp : undefined,
+      message,
+      maskedPhone,
+      maskedEmail,
+      simulated: smsResult.simulated || emailResult.simulated,
+      devCode: (smsResult.simulated || emailResult.simulated) ? plainOtp : undefined,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[ForgotPassword:SendOTP] Error:", msg);
-    return NextResponse.json({ error: "Failed to dispatch SMS verification code." }, { status: 500 });
+    return NextResponse.json({ error: "Failed to dispatch verification code." }, { status: 500 });
   }
 }

@@ -326,6 +326,131 @@ export async function sendOTPEmail(
 }
 
 /**
+ * Dispatch Password Reset verification code to user's registered email address
+ */
+export async function sendPasswordResetEmailOTP(
+  recipientEmail: string,
+  otpCode: string
+): Promise<{ success: boolean; simulated: boolean; error?: string }> {
+  const fromAddress = process.env.SMTP_FROM || '"SecureDocX Security" <no-reply@securedocx.portal>';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Password Reset Verification Code</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; margin: 0; }
+          .container { max-width: 520px; margin: 0 auto; background-color: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+          .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+          .badge { font-size: 11px; font-family: monospace; text-transform: uppercase; padding: 4px 10px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; border-radius: 9999px; font-weight: bold; }
+          h1 { font-size: 20px; font-weight: 800; color: #ffffff; margin: 0 0 12px 0; }
+          p { font-size: 13px; line-height: 1.6; color: #9ca3af; margin: 0 0 20px 0; }
+          .otp-card { background: #0b0f19; border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center; margin: 24px 0; }
+          .otp-code { font-family: 'Courier New', Courier, monospace; font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #6366f1; }
+          .expiry-notice { font-size: 11px; color: #f59e0b; margin-top: 8px; font-family: monospace; }
+          .security-footer { border-top: 1px solid #1f2937; padding-top: 20px; margin-top: 24px; font-size: 11px; color: #6b7280; font-family: monospace; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="brand">
+            <span class="badge">SECUREDOCX • ACCOUNT SECURITY</span>
+          </div>
+          <h1>Password Reset Verification Code</h1>
+          <p>
+            A request was received to reset the password for your SecureDocX account (<strong>${recipientEmail}</strong>).
+            Enter the verification code below to authorize the password reset:
+          </p>
+          <div class="otp-card">
+            <div class="otp-code">${otpCode}</div>
+            <div class="expiry-notice">⏱ Valid for 5 minutes (300 seconds) • Single-Use Only</div>
+          </div>
+          <p style="font-size: 12px; color: #f87171;">
+            ⚠️ If you did not request a password reset, please ignore this email and ensure your account password remains secure. Never share this verification code with anyone.
+          </p>
+          <div class="security-footer">
+            Security Standard: HMAC-SHA256 Multi-Factor Challenge &bull; Rate Limited
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  const allowSimulation =
+    process.env.ALLOW_SIMULATED_OTP !== "false" ||
+    process.env.NODE_ENV !== "production";
+
+  let lastError = "";
+
+  // 1. PRIMARY DISPATCH: Nodemailer (Gmail SMTP / Custom SMTP)
+  const transporter = createEmailTransporter();
+  if (transporter) {
+    try {
+      const info = await transporter.sendMail({
+        from: fromAddress,
+        to: recipientEmail,
+        subject: `[SecureDocX] Your Password Reset Code: ${otpCode}`,
+        text: `Your SecureDocX password reset verification code is: ${otpCode}. It expires in 5 minutes. Never share this code.`,
+        html: htmlContent,
+      });
+      console.log("[PasswordResetEmailOTP] Nodemailer dispatched successfully:", info.messageId);
+      return { success: true, simulated: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[PasswordResetEmailOTP] Nodemailer SMTP Delivery error:", msg);
+      lastError = `Gmail SMTP error: ${msg}`;
+    }
+  }
+
+  // 2. SECONDARY CLOUD DISPATCH: Resend HTTP API
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  const isRealResendKey = resendApiKey && resendApiKey.startsWith("re_") && resendApiKey.length > 5;
+  if (isRealResendKey) {
+    try {
+      const resendFrom = process.env.RESEND_FROM || "SecureDocX <onboarding@resend.dev>";
+      const resendRes = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: resendFrom,
+          to: [recipientEmail],
+          subject: `[SecureDocX] Your Password Reset Code: ${otpCode}`,
+          text: `Your SecureDocX password reset verification code is: ${otpCode}. It expires in 5 minutes. Never share this code.`,
+          html: htmlContent,
+        }),
+      });
+      if (resendRes.ok) {
+        console.log("[PasswordResetEmailOTP] Resend HTTP API dispatched successfully");
+        return { success: true, simulated: false };
+      }
+    } catch (resendErr: unknown) {
+      console.error("[PasswordResetEmailOTP] Resend failed:", resendErr);
+    }
+  }
+
+  // 3. Fallback: Simulator in dev or when simulation allowed
+  if (allowSimulation) {
+    console.log(`\n======================================================`);
+    console.log(`[SECUREDOCX PASSWORD RESET EMAIL OTP SIMULATOR]`);
+    console.log(`To: ${recipientEmail}`);
+    console.log(`OTP Code: ${otpCode}`);
+    console.log(`======================================================\n`);
+    return { success: true, simulated: true };
+  }
+
+  return {
+    success: false,
+    simulated: false,
+    error: lastError || "Failed to dispatch password reset email.",
+  };
+}
+
+/**
  * Service to generate and dispatch OTP to designated recipient
  */
 export async function requestEmailOTP(shareLinkId: string, clientIp: string) {
