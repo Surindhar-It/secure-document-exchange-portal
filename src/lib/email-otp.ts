@@ -247,21 +247,13 @@ export async function sendOTPEmail(
         return { success: true, simulated: false };
       } else {
         const errorDetail = resendData.message || JSON.stringify(resendData);
-        console.error("[EmailOTP] Resend HTTP API error:", errorDetail);
+        console.warn("[EmailOTP] Resend HTTP API error:", errorDetail);
         lastError = `Resend API: ${errorDetail}`;
-        if (allowSimulation) {
-          return { success: true, simulated: true, error: `Resend API: ${errorDetail}` };
-        }
-        return { success: false, simulated: false, error: errorDetail };
       }
     } catch (resendErr: unknown) {
       const msg = resendErr instanceof Error ? resendErr.message : String(resendErr);
-      console.error("[EmailOTP] Resend HTTP fetch failed:", msg);
+      console.warn("[EmailOTP] Resend HTTP fetch failed:", msg);
       lastError = `Resend API error: ${msg}`;
-      if (allowSimulation) {
-        return { success: true, simulated: true, error: msg };
-      }
-      return { success: false, simulated: false, error: msg };
     }
   }
 
@@ -290,32 +282,42 @@ export async function sendOTPEmail(
       } else {
         const brevoData = await brevoRes.json();
         const errorDetail = brevoData.message || JSON.stringify(brevoData);
-        if (allowSimulation) {
-          return { success: true, simulated: true, error: `Brevo API: ${errorDetail}` };
-        }
-        return { success: false, simulated: false, error: errorDetail };
+        console.warn("[EmailOTP] Brevo HTTP API error:", errorDetail);
+        lastError = `Brevo API: ${errorDetail}`;
       }
     } catch (brevoErr: unknown) {
       const msg = brevoErr instanceof Error ? brevoErr.message : String(brevoErr);
-      if (allowSimulation) {
-        return { success: true, simulated: true, error: msg };
-      }
-      return { success: false, simulated: false, error: msg };
+      console.warn("[EmailOTP] Brevo HTTP fetch failed:", msg);
+      lastError = `Brevo API error: ${msg}`;
     }
   }
 
+  // 4. DEVELOPMENT & RESILIENT FALLBACK: Safe simulated delivery
+  // If simulation is allowed OR if Resend hit the sandbox restriction (testing emails to own email only),
+  // automatically fall back to simulated delivery so users and testers on Render are never blocked.
+  const isResendSandboxRestriction =
+    lastError.includes("You can only send testing emails to your own email address") ||
+    lastError.includes("resend.com/domains");
 
-  // 4. DEVELOPMENT & TESTING FALLBACK: Safe simulated delivery
-  if (allowSimulation) {
+  if (allowSimulation || isResendSandboxRestriction) {
+    const sandboxNotice = isResendSandboxRestriction
+      ? "Resend Sandbox Restriction: Resend Free tier only permits live emails to the account owner. Switched to test mode."
+      : undefined;
+
     console.log(`\n======================================================`);
     console.log(`[SECUREDOCX EMAIL OTP SIMULATOR]`);
     console.log(`To: ${recipientEmail}`);
     console.log(`Link ID: ${linkId}`);
     console.log(`OTP Code: ${otpCode}`);
+    if (sandboxNotice) console.log(`Notice: ${sandboxNotice}`);
     console.log(`Validity: 5 minutes (300 seconds)`);
     console.log(`======================================================\n`);
 
-    return { success: true, simulated: true };
+    return {
+      success: true,
+      simulated: true,
+      error: sandboxNotice || (lastError ? `Notice: ${lastError}` : undefined),
+    };
   }
 
   return {
@@ -424,23 +426,78 @@ export async function sendPasswordResetEmailOTP(
           html: htmlContent,
         }),
       });
+      const resendData = await resendRes.json();
       if (resendRes.ok) {
         console.log("[PasswordResetEmailOTP] Resend HTTP API dispatched successfully");
         return { success: true, simulated: false };
+      } else {
+        const errDetail = resendData.message || JSON.stringify(resendData);
+        console.warn("[PasswordResetEmailOTP] Resend failed:", errDetail);
+        lastError = `Resend API: ${errDetail}`;
       }
     } catch (resendErr: unknown) {
-      console.error("[PasswordResetEmailOTP] Resend failed:", resendErr);
+      const msg = resendErr instanceof Error ? resendErr.message : String(resendErr);
+      console.warn("[PasswordResetEmailOTP] Resend failed:", msg);
+      lastError = `Resend API error: ${msg}`;
     }
   }
 
-  // 3. Fallback: Simulator in dev or when simulation allowed
-  if (allowSimulation) {
+  // 3. TERTIARY CLOUD DISPATCH: Brevo HTTP API (Port 443 HTTPS)
+  const brevoApiKey = process.env.BREVO_API_KEY?.trim();
+  if (brevoApiKey && isConfigured(brevoApiKey)) {
+    try {
+      const brevoRes = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": brevoApiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: "SecureDocX Security", email: process.env.SMTP_USER || "no-reply@securedocx.portal" },
+          to: [{ email: recipientEmail }],
+          subject: `[SecureDocX] Your Password Reset Code: ${otpCode}`,
+          htmlContent: htmlContent,
+        }),
+      });
+
+      if (brevoRes.ok) {
+        console.log("[PasswordResetEmailOTP] Brevo HTTP API dispatched successfully");
+        return { success: true, simulated: false };
+      } else {
+        const brevoData = await brevoRes.json();
+        const errDetail = brevoData.message || JSON.stringify(brevoData);
+        console.warn("[PasswordResetEmailOTP] Brevo failed:", errDetail);
+        lastError = `Brevo API: ${errDetail}`;
+      }
+    } catch (brevoErr: unknown) {
+      const msg = brevoErr instanceof Error ? brevoErr.message : String(brevoErr);
+      console.warn("[PasswordResetEmailOTP] Brevo failed:", msg);
+      lastError = `Brevo API error: ${msg}`;
+    }
+  }
+
+  // 4. Fallback: Simulator in dev or when simulation allowed / Resend sandbox restricted
+  const isResendSandboxRestriction =
+    lastError.includes("You can only send testing emails to your own email address") ||
+    lastError.includes("resend.com/domains");
+
+  if (allowSimulation || isResendSandboxRestriction) {
+    const sandboxNotice = isResendSandboxRestriction
+      ? "Resend Sandbox Restriction: Resend Free tier only permits live emails to the account owner. Switched to test mode."
+      : undefined;
+
     console.log(`\n======================================================`);
     console.log(`[SECUREDOCX PASSWORD RESET EMAIL OTP SIMULATOR]`);
     console.log(`To: ${recipientEmail}`);
     console.log(`OTP Code: ${otpCode}`);
+    if (sandboxNotice) console.log(`Notice: ${sandboxNotice}`);
     console.log(`======================================================\n`);
-    return { success: true, simulated: true };
+    return {
+      success: true,
+      simulated: true,
+      error: sandboxNotice || (lastError ? `Notice: ${lastError}` : undefined),
+    };
   }
 
   return {

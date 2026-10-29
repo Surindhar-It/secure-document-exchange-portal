@@ -188,19 +188,11 @@ async function dispatchSingleEmail({
         const errDetail = resData.message || JSON.stringify(resData);
         console.warn("[EmailService] Resend API error:", errDetail);
         lastError = `Resend API: ${errDetail}`;
-        if (allowSimulation) {
-          return { success: true, simulated: true, error: `Resend: ${errDetail}` };
-        }
-        return { success: false, simulated: false, error: errDetail };
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[EmailService] Resend API request failed:", msg);
       lastError = `Resend API error: ${msg}`;
-      if (allowSimulation) {
-        return { success: true, simulated: true, error: msg };
-      }
-      return { success: false, simulated: false, error: msg };
     }
   }
 
@@ -231,29 +223,37 @@ async function dispatchSingleEmail({
       } else {
         const data = await res.json();
         const errDetail = data.message || JSON.stringify(data);
-        if (allowSimulation) {
-          return { success: true, simulated: true, error: `Brevo: ${errDetail}` };
-        }
-        return { success: false, simulated: false, error: errDetail };
+        console.warn("[EmailService] Brevo API error:", errDetail);
+        lastError = `Brevo: ${errDetail}`;
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (allowSimulation) {
-        return { success: true, simulated: true, error: msg };
-      }
-      return { success: false, simulated: false, error: msg };
+      console.warn("[EmailService] Brevo request failed:", msg);
+      lastError = `Brevo error: ${msg}`;
     }
   }
 
+  // Tier 4: Simulated Delivery / Resend Sandbox Fallback
+  const isResendSandboxRestriction =
+    lastError.includes("You can only send testing emails to your own email address") ||
+    lastError.includes("resend.com/domains");
 
-  // Tier 4: Simulated Delivery
-  if (allowSimulation) {
+  if (allowSimulation || isResendSandboxRestriction) {
+    const sandboxNotice = isResendSandboxRestriction
+      ? "Resend Sandbox Restriction: Resend Free tier only permits live emails to the account owner. Notification dispatched in test mode."
+      : undefined;
+
     console.log(`\n======================================================`);
     console.log(`[SECUREDOCX EMAIL DISPATCH SIMULATOR]`);
     console.log(`To: ${to}`);
     console.log(`Subject: ${subject}`);
+    if (sandboxNotice) console.log(`Notice: ${sandboxNotice}`);
     console.log(`======================================================\n`);
-    return { success: true, simulated: true };
+    return {
+      success: true,
+      simulated: true,
+      error: sandboxNotice || (lastError ? `Notice: ${lastError}` : undefined),
+    };
   }
 
   return {

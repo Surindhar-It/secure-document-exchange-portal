@@ -337,19 +337,25 @@ export default function EmailOtpVerificationCard({
       ) : (
         /* OTP Verification Form */
         <div className="space-y-4 pt-1">
-          {/* Simulation mode helper banner (displayed when SMTP is not configured in .env) */}
+          {/* Simulation mode / Resend Sandbox helper banner */}
           {isSimulated && (
             <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl space-y-1.5 text-xs font-mono">
               <div className="flex items-center gap-1.5 text-amber-400 font-bold">
                 <AlertOctagon className="w-3.5 h-3.5" />
-                <span>Simulated Mode (SMTP Server Not Configured)</span>
+                <span>
+                  {statusMessage?.includes("Resend Sandbox")
+                    ? "Test Mode (Resend Sandbox Restriction)"
+                    : "Simulated Test Mode"}
+                </span>
               </div>
               <p className="text-[10px] text-text-secondary leading-normal">
-                No SMTP credentials are configured in <code className="text-amber-300">.env</code>. Real emails require SMTP settings (Gmail App Password, Brevo, Resend, etc.).
+                {statusMessage?.includes("Resend Sandbox")
+                  ? "Resend Free accounts are restricted to delivering emails only to the account owner. For live delivery to any email address, verify a domain at resend.com/domains or configure BREVO_API_KEY."
+                  : "No live SMTP or cloud email service responded. Test OTP code generated for instant verification:"}
               </p>
               {devCode && (
                 <div className="flex items-center justify-between p-2 bg-cyber-dark rounded border border-border-primary mt-1">
-                  <span className="text-[10px] text-text-secondary">Simulated Test OTP:</span>
+                  <span className="text-[10px] text-text-secondary">Verification Code:</span>
                   <button
                     type="button"
                     onClick={() => {
