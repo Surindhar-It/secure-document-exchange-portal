@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { signJwtToken } from "@/lib/auth";
 import { writeAuditLog } from "@/lib/audit";
 import { evaluateAccessThreat, resolveClientIp } from "@/lib/security";
+import { formatPhoneNumber } from "@/lib/textbee";
 
 export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
@@ -11,18 +12,22 @@ export async function POST(req: NextRequest) {
   
   try {
     const body = await req.json();
-    const { email, password } = body;
+    const identifier = (body.identifier || body.email || "")?.trim();
+    const { password } = body;
 
-    if (!email || !password) {
-      return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
+    if (!identifier || !password) {
+      return NextResponse.json(
+        { error: "Email or mobile phone number and password are required" },
+        { status: 400 }
+      );
     }
 
     // AI Threat Engine check for IP
     const threatCheck = await evaluateAccessThreat({
       ipAddress: ip,
-      userEmail: email,
+      userEmail: identifier,
       action: "LOGIN_CHECK",
-      details: { email }
+      details: { identifier }
     });
 
     if (threatCheck.isThreat && threatCheck.threatType === "BRUTE_FORCE") {
@@ -33,23 +38,35 @@ export async function POST(req: NextRequest) {
       }, { status: 403 });
     }
 
-    const user = await db.user.findUnique({ where: { email } });
+    const cleanLower = identifier.toLowerCase();
+    const cleanPhone = formatPhoneNumber(identifier);
+
+    // Look up user by either Email OR Phone Number
+    const user = await db.user.findFirst({
+      where: {
+        OR: [
+          { email: cleanLower },
+          { phoneNumber: cleanPhone },
+        ],
+      },
+    });
 
     if (!user) {
       // Log failure in hash chain
       await writeAuditLog({
         action: "LOGIN_FAIL",
-        userEmail: email,
+        userEmail: identifier,
         ipAddress: ip,
         userAgent,
         details: { reason: "User not found" },
       });
 
       // Assess anomaly
-      await evaluateAccessThreat({ ipAddress: ip, userEmail: email, action: "LOGIN_FAIL" });
+      await evaluateAccessThreat({ ipAddress: ip, userEmail: identifier, action: "LOGIN_FAIL" });
 
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
+
 
     // Verify Password
     const passwordMatch = await bcrypt.compare(password, user.passwordHash);

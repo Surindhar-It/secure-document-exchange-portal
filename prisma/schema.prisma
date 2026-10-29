@@ -22,9 +22,24 @@ model User {
   files             FileMetadata[]
   shareLinks        ShareLink[]
   passwordResetOtps PasswordResetOtp[]
+  loginSmsOtps      LoginSmsOtp[]
+}
+
+model LoginSmsOtp {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber String
+  otpHash     String
+  expiresAt   DateTime
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  isUsed      Boolean  @default(false)
+  createdAt   DateTime @default(now())
 }
 
 model PasswordResetOtp {
+
   id          String   @id @default(uuid())
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)

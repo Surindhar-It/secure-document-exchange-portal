@@ -14,7 +14,14 @@ export default function LoginPage() {
   
   // Form input fields
   const [email, setEmail] = useState("");
+  const [registerPhone, setRegisterPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [loginIdentifier, setLoginIdentifier] = useState("");
+  const [loginMode, setLoginMode] = useState<"password" | "sms_otp">("password");
+  const [loginSmsStep, setLoginSmsStep] = useState<"request" | "verify">("request");
+  const [loginOtpCode, setLoginOtpCode] = useState("");
+  const [loginMaskedPhone, setLoginMaskedPhone] = useState("");
+  const [loginCooldown, setLoginCooldown] = useState(0);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
@@ -24,6 +31,7 @@ export default function LoginPage() {
   const [mfaCode, setMfaCode] = useState("");
 
   // Forgot Password / SMS OTP states
+
   const [fpStep, setFpStep] = useState<"request" | "verify" | "reset">("request");
   const [fpIdentifier, setFpIdentifier] = useState("");
   const [fpPhoneInput, setFpPhoneInput] = useState("");
@@ -49,7 +57,12 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, publicKey: pubKey }),
+        body: JSON.stringify({
+          email,
+          phoneNumber: registerPhone,
+          password,
+          publicKey: pubKey,
+        }),
       });
 
       const data = await res.json();
@@ -58,6 +71,7 @@ export default function LoginPage() {
       }
 
       setSuccess("Account secured successfully! Switching to sign in...");
+      setLoginIdentifier(email);
       setTimeout(() => {
         setActiveTab("login");
         setSuccess("");
@@ -69,7 +83,7 @@ export default function LoginPage() {
     }
   };
 
-  // traditional login
+  // traditional login using either Email OR Phone Number + Password
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -80,7 +94,7 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ identifier: loginIdentifier, password }),
       });
 
       const data = await res.json();
@@ -108,8 +122,87 @@ export default function LoginPage() {
     }
   };
 
+  // Dispatch Login SMS OTP via TextBee
+  const handleSendLoginSmsOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginIdentifier.trim()) {
+      setError("Please enter your registered email address or mobile phone number.");
+      return;
+    }
+    setError("");
+    setSuccess("");
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/auth/login/send-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: loginIdentifier }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to dispatch SMS code");
+      }
+
+      setLoginMaskedPhone(data.maskedPhone);
+      setLoginSmsStep("verify");
+      setLoginCooldown(60);
+      setSuccess(data.message || `Login verification code sent to ${data.maskedPhone}.`);
+
+      const interval = setInterval(() => {
+        setLoginCooldown((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Verify Login SMS OTP and sign in
+  const handleVerifyLoginSmsOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginOtpCode || loginOtpCode.length !== 6) {
+      setError("Please enter the 6-digit verification code.");
+      return;
+    }
+    setError("");
+    setSuccess("");
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/auth/login/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: loginIdentifier,
+          otpCode: loginOtpCode,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Verification failed");
+      }
+
+      setSuccess("SMS OTP verified! Entering portal...");
+      router.push("/dashboard");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
+    }
+  };
+
   // mfa verification
   const handleMfaSubmit = async (e: React.FormEvent) => {
+
     e.preventDefault();
     setError("");
     setLoading(true);
@@ -389,72 +482,180 @@ export default function LoginPage() {
 
         <AnimatePresence mode="wait">
           {activeTab === "login" && (
-            <motion.form
+            <motion.div
               key="login"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onSubmit={handleLogin}
               className="space-y-4"
             >
+              {/* Identifier Input: Email OR Phone Number */}
               <div>
-                <label className="block text-xs font-medium text-text-secondary mb-2">Email Address</label>
+                <label className="block text-xs font-medium text-text-secondary mb-2">
+                  Email Address or Mobile Phone Number
+                </label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
                   <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    type="text"
+                    value={loginIdentifier}
+                    onChange={(e) => setLoginIdentifier(e.target.value)}
                     required
-                    placeholder="name@domain.com"
+                    placeholder="name@domain.com or +919876543210"
                     className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
                   />
                 </div>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-medium text-text-secondary">Access Password</label>
+              {/* Login Method Toggle: Password vs SMS OTP */}
+              <div className="grid grid-cols-2 gap-2 p-1 bg-cyber-dark rounded-xl border border-border-primary my-1">
+                <button
+                  type="button"
+                  onClick={() => { setLoginMode("password"); setError(""); }}
+                  className={`py-1.5 text-xs font-mono font-medium rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    loginMode === "password"
+                      ? "bg-primary-indigo text-white shadow-sm"
+                      : "text-text-secondary hover:text-text-primary"
+                  }`}
+                >
+                  <Lock className="w-3.5 h-3.5" /> Password
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setLoginMode("sms_otp"); setError(""); }}
+                  className={`py-1.5 text-xs font-mono font-medium rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    loginMode === "sms_otp"
+                      ? "bg-primary-indigo text-white shadow-sm"
+                      : "text-text-secondary hover:text-text-primary"
+                  }`}
+                >
+                  <Smartphone className="w-3.5 h-3.5" /> SMS OTP
+                </button>
+              </div>
+
+              {/* MODE 1: Sign in with Password */}
+              {loginMode === "password" && (
+                <form onSubmit={handleLogin} className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-medium text-text-secondary">Access Password</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab("forgot-password");
+                          setFpStep("request");
+                          setError("");
+                          setSuccess("");
+                          setFpIdentifier(loginIdentifier || "");
+                        }}
+                        className="text-[11px] text-primary-indigo hover:text-indigo-400 font-mono transition-colors cursor-pointer"
+                      >
+                        Forgot Password?
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                      <input
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                        placeholder="••••••••••••"
+                        className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+
                   <button
-                    type="button"
-                    onClick={() => {
-                      setActiveTab("forgot-password");
-                      setFpStep("request");
-                      setError("");
-                      setSuccess("");
-                      setFpIdentifier(email || "");
-                    }}
-                    className="text-[11px] text-primary-indigo hover:text-indigo-400 font-mono transition-colors cursor-pointer"
+                    type="submit"
+                    disabled={loading}
+                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
                   >
-                    Forgot Password?
+                    {loading ? "Authenticating..." : "Authorize Access"} <ArrowRight className="w-4 h-4" />
                   </button>
+                </form>
+              )}
+
+              {/* MODE 2: Sign in with TextBee SMS OTP */}
+              {loginMode === "sms_otp" && (
+                <div className="space-y-4">
+                  {loginSmsStep === "request" && (
+                    <form onSubmit={handleSendLoginSmsOtp} className="space-y-4">
+                      <div className="p-3 bg-indigo-500/5 border border-indigo-500/15 rounded-xl text-[11px] font-mono text-text-secondary flex gap-2.5 items-start">
+                        <Smartphone className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
+                        <div>
+                          A 6-digit one-time code will be dispatched to your phone via <strong>TextBee SMS Gateway</strong>.
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                      >
+                        {loading ? "Dispatching SMS..." : "Send SMS Login Code"} <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </form>
+                  )}
+
+                  {loginSmsStep === "verify" && (
+                    <form onSubmit={handleVerifyLoginSmsOtp} className="space-y-4">
+                      <div className="text-center space-y-1">
+                        <div className="text-xs font-mono text-text-secondary">Code dispatched to</div>
+                        <div className="text-sm font-bold font-mono text-indigo-400">{loginMaskedPhone}</div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-medium text-text-secondary mb-2 font-mono text-center">
+                          6-Digit SMS Login Code
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={6}
+                          value={loginOtpCode}
+                          onChange={(e) => setLoginOtpCode(e.target.value.replace(/\D/g, ""))}
+                          required
+                          placeholder="000000"
+                          className="w-44 mx-auto block text-center tracking-[12px] pl-3 py-3 rounded-xl bg-cyber-dark border border-indigo-500/40 focus:border-indigo-400 focus:outline-none text-lg text-primary-indigo font-mono font-bold transition-all"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading || loginOtpCode.length !== 6}
+                        className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all disabled:opacity-50"
+                      >
+                        {loading ? "Verifying..." : "Verify & Sign In"} <ArrowRight className="w-4 h-4" />
+                      </button>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setLoginSmsStep("request")}
+                          className="text-xs font-mono text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+                        >
+                          Change Number
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSendLoginSmsOtp}
+                          disabled={loading || loginCooldown > 0}
+                          className="text-xs font-mono text-indigo-400 hover:text-indigo-300 disabled:text-text-secondary transition-colors cursor-pointer flex items-center gap-1"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          {loginCooldown > 0 ? `Resend (${loginCooldown}s)` : "Resend Code"}
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    placeholder="••••••••••••"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
-                  />
-                </div>
-              </div>
+              )}
 
-
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
-              >
-                {loading ? "Authenticating..." : "Authorize Access"} <ArrowRight className="w-4 h-4" />
-              </button>
-
-              <div className="relative my-6 text-center">
+              <div className="relative my-4 text-center">
                 <hr className="border-border-primary" />
                 <span className="bg-cyber-card px-3 text-xs text-text-secondary absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 uppercase tracking-widest font-mono text-[9px]">
-                  or secure verify
+                  or biometric sign in
                 </span>
               </div>
 
@@ -467,7 +668,7 @@ export default function LoginPage() {
               >
                 <Fingerprint className="w-4.5 h-4.5 text-primary-indigo animate-pulse" /> Sign In with Passkey (WebAuthn)
               </button>
-            </motion.form>
+            </motion.div>
           )}
 
           {activeTab === "register" && (
@@ -495,6 +696,22 @@ export default function LoginPage() {
               </div>
 
               <div>
+                <label className="block text-xs font-medium text-text-secondary mb-2">Mobile Phone Number (SMS)</label>
+                <div className="relative">
+                  <Smartphone className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                  <input
+                    type="tel"
+                    value={registerPhone}
+                    onChange={(e) => setRegisterPhone(e.target.value)}
+                    required
+                    placeholder="+919876543210"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                  />
+                </div>
+                <p className="text-[10px] text-text-secondary font-mono mt-1">Used for TextBee SMS OTP login and secure password recovery.</p>
+              </div>
+
+              <div>
                 <label className="block text-xs font-medium text-text-secondary mb-2">Account Password</label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
@@ -508,6 +725,7 @@ export default function LoginPage() {
                   />
                 </div>
               </div>
+
 
               <div className="p-3 bg-primary-indigo/5 border border-primary-indigo/10 rounded-xl flex gap-3 text-[11px] text-text-secondary leading-relaxed font-mono">
                 <Key className="w-5 h-5 flex-shrink-0 text-primary-indigo" />
