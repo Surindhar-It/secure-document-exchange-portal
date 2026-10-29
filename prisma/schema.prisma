@@ -9,27 +9,44 @@ generator client {
 }
 
 model User {
-  id           String         @id @default(uuid())
-  email        String         @unique
-  passwordHash String
-  mfaSecret    String?
-  mfaEnabled   Boolean        @default(false)
-  publicKey    String?        // Base64 public key for user cryptographic operations
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  passkeys     Passkey[]
-  files        FileMetadata[]
-  shareLinks   ShareLink[]
+  id                String             @id @default(uuid())
+  email             String             @unique
+  phoneNumber       String?
+  passwordHash      String
+  mfaSecret         String?
+  mfaEnabled        Boolean            @default(false)
+  publicKey         String?            // Base64 public key for user cryptographic operations
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  passkeys          Passkey[]
+  files             FileMetadata[]
+  shareLinks        ShareLink[]
+  passwordResetOtps PasswordResetOtp[]
+}
+
+model PasswordResetOtp {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber String
+  otpHash     String
+  expiresAt   DateTime
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  isUsed      Boolean  @default(false)
+  resetToken  String?
+  createdAt   DateTime @default(now())
 }
 
 model Passkey {
-  id           String @id
-  publicKey    String
-  counter      Int
-  userId       String
-  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt    DateTime @default(now())
+  id        String   @id
+  publicKey String
+  counter   Int
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
 }
+
 
 model FileMetadata {
   id          String      @id @default(uuid())

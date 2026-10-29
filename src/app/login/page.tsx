@@ -2,15 +2,15 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Shield, Key, Mail, Lock, Fingerprint, ArrowRight, CheckCircle2, ShieldAlert } from "lucide-react";
+import { Shield, Key, Mail, Lock, Fingerprint, ArrowRight, CheckCircle2, ShieldAlert, Smartphone, ArrowLeft, RefreshCw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { startAuthentication } from "@simplewebauthn/browser";
 
 export default function LoginPage() {
   const router = useRouter();
   
-  // Tabs: "login" | "register" | "mfa"
-  const [activeTab, setActiveTab] = useState<"login" | "register" | "mfa">("login");
+  // Tabs: "login" | "register" | "mfa" | "forgot-password"
+  const [activeTab, setActiveTab] = useState<"login" | "register" | "mfa" | "forgot-password">("login");
   
   // Form input fields
   const [email, setEmail] = useState("");
@@ -22,6 +22,19 @@ export default function LoginPage() {
   // MFA States
   const [mfaUserId, setMfaUserId] = useState("");
   const [mfaCode, setMfaCode] = useState("");
+
+  // Forgot Password / SMS OTP states
+  const [fpStep, setFpStep] = useState<"request" | "verify" | "reset">("request");
+  const [fpIdentifier, setFpIdentifier] = useState("");
+  const [fpPhoneInput, setFpPhoneInput] = useState("");
+  const [fpRequiresPhone, setFpRequiresPhone] = useState(false);
+  const [fpOtpCode, setFpOtpCode] = useState("");
+  const [fpMaskedPhone, setFpMaskedPhone] = useState("");
+  const [fpResetToken, setFpResetToken] = useState("");
+  const [fpNewPassword, setFpNewPassword] = useState("");
+  const [fpConfirmPassword, setFpConfirmPassword] = useState("");
+  const [fpCooldown, setFpCooldown] = useState(0);
+
 
   // traditional email & password register
   const handleRegister = async (e: React.FormEvent) => {
@@ -122,8 +135,138 @@ export default function LoginPage() {
     }
   };
 
+  // SMS OTP: Request password reset verification code via TextBee
+  const handleSendSmsOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/auth/forgot-password/send-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: fpIdentifier,
+          phone: fpPhoneInput || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.requiresPhoneInput) {
+          setFpRequiresPhone(true);
+        }
+        throw new Error(data.error || "Failed to send SMS OTP");
+      }
+
+      setFpMaskedPhone(data.maskedPhone);
+      setFpStep("verify");
+      setFpCooldown(60);
+      setSuccess(data.message || `SMS verification code dispatched via TextBee.`);
+
+      // 60-second resend cooldown timer
+      const interval = setInterval(() => {
+        setFpCooldown((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // SMS OTP: Verify verification code
+  const handleVerifySmsOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/auth/forgot-password/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: fpIdentifier,
+          otpCode: fpOtpCode,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to verify SMS code");
+      }
+
+      setFpResetToken(data.resetToken);
+      setFpStep("reset");
+      setSuccess(data.message || "Code verified. Please set your new password.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // SMS OTP: Set new password
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+
+    if (fpNewPassword.length < 8) {
+      setError("New password must be at least 8 characters long.");
+      return;
+    }
+
+    if (fpNewPassword !== fpConfirmPassword) {
+      setError("Passwords do not match. Please verify.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/auth/forgot-password/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resetToken: fpResetToken,
+          newPassword: fpNewPassword,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to reset password");
+      }
+
+      setSuccess("Password updated successfully! Redirecting to sign in...");
+      setTimeout(() => {
+        setActiveTab("login");
+        setFpStep("request");
+        setFpOtpCode("");
+        setFpNewPassword("");
+        setFpConfirmPassword("");
+        setPassword("");
+        setSuccess("");
+      }, 2500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // passkey (WebAuthn) login
   const handlePasskeyLogin = async () => {
+
     setError("");
     setSuccess("");
     setLoading(true);
@@ -219,7 +362,7 @@ export default function LoginPage() {
         </AnimatePresence>
 
         {/* Tab Selector */}
-        {activeTab !== "mfa" && (
+        {activeTab !== "mfa" && activeTab !== "forgot-password" && (
           <div className="flex bg-cyber-dark p-1 rounded-xl border border-border-primary mb-6">
             <button
               onClick={() => { setActiveTab("login"); setError(""); }}
@@ -270,7 +413,22 @@ export default function LoginPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-text-secondary mb-2">Access Password</label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-medium text-text-secondary">Access Password</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab("forgot-password");
+                      setFpStep("request");
+                      setError("");
+                      setSuccess("");
+                      setFpIdentifier(email || "");
+                    }}
+                    className="text-[11px] text-primary-indigo hover:text-indigo-400 font-mono transition-colors cursor-pointer"
+                  >
+                    Forgot Password?
+                  </button>
+                </div>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
                   <input
@@ -283,6 +441,7 @@ export default function LoginPage() {
                   />
                 </div>
               </div>
+
 
               <button
                 type="submit"
@@ -413,7 +572,192 @@ export default function LoginPage() {
               </button>
             </motion.form>
           )}
+
+          {activeTab === "forgot-password" && (
+            <motion.div
+              key="forgot-password"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="space-y-5"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-border-primary/60">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab("login");
+                    setError("");
+                    setSuccess("");
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary font-mono transition-colors cursor-pointer"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" /> Back to Sign In
+                </button>
+                <span className="text-[10px] font-mono font-bold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded flex items-center gap-1">
+                  <Smartphone className="w-3 h-3" /> TextBee SMS OTP
+                </span>
+              </div>
+
+              {/* STEP 1: Enter email or phone to receive SMS OTP */}
+              {fpStep === "request" && (
+                <form onSubmit={handleSendSmsOtp} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-2">
+                      Registered Email Address or Phone
+                    </label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                      <input
+                        type="text"
+                        value={fpIdentifier}
+                        onChange={(e) => setFpIdentifier(e.target.value)}
+                        required
+                        placeholder="name@domain.com or +919876543210"
+                        className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {fpRequiresPhone && (
+                    <div>
+                      <label className="block text-xs font-medium text-text-secondary mb-2">
+                        Mobile Phone Number (E.164)
+                      </label>
+                      <div className="relative">
+                        <Smartphone className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                        <input
+                          type="tel"
+                          value={fpPhoneInput}
+                          onChange={(e) => setFpPhoneInput(e.target.value)}
+                          required
+                          placeholder="+919876543210"
+                          className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-indigo-500/40 focus:border-primary-indigo/70 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                        />
+                      </div>
+                      <p className="text-[10px] font-mono text-text-secondary mt-1">
+                        Link your phone number to receive the TextBee SMS verification code.
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="p-3 bg-indigo-500/5 border border-indigo-500/15 rounded-xl text-[11px] font-mono text-text-secondary flex gap-2.5 items-start">
+                    <Smartphone className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      A 6-digit one-time code will be dispatched via <strong>TextBee SMS Gateway</strong> to your registered mobile device.
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                  >
+                    {loading ? "Dispatching SMS..." : "Send SMS Verification Code"}{" "}
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </form>
+              )}
+
+              {/* STEP 2: Enter 6-digit SMS OTP */}
+              {fpStep === "verify" && (
+                <form onSubmit={handleVerifySmsOtp} className="space-y-4">
+                  <div className="text-center space-y-1">
+                    <div className="text-xs font-mono text-text-secondary">Code dispatched to</div>
+                    <div className="text-sm font-bold font-mono text-indigo-400">{fpMaskedPhone}</div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-2 font-mono text-center">
+                      6-Digit SMS OTP
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={6}
+                      value={fpOtpCode}
+                      onChange={(e) => setFpOtpCode(e.target.value.replace(/\D/g, ""))}
+                      required
+                      placeholder="000000"
+                      className="w-44 mx-auto block text-center tracking-[12px] pl-3 py-3 rounded-xl bg-cyber-dark border border-indigo-500/40 focus:border-indigo-400 focus:outline-none text-lg text-primary-indigo font-mono font-bold transition-all"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading || fpOtpCode.length !== 6}
+                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-indigo to-primary-purple hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all disabled:opacity-50"
+                  >
+                    {loading ? "Verifying..." : "Verify SMS Code"} <ArrowRight className="w-4 h-4" />
+                  </button>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setFpStep("request")}
+                      className="text-xs font-mono text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+                    >
+                      Change Phone/Email
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleSendSmsOtp}
+                      disabled={loading || fpCooldown > 0}
+                      className="text-xs font-mono text-indigo-400 hover:text-indigo-300 disabled:text-text-secondary transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      {fpCooldown > 0 ? `Resend SMS (${fpCooldown}s)` : "Resend SMS"}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* STEP 3: Enter New Password */}
+              {fpStep === "reset" && (
+                <form onSubmit={handleResetPassword} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-2">New Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                      <input
+                        type="password"
+                        value={fpNewPassword}
+                        onChange={(e) => setFpNewPassword(e.target.value)}
+                        required
+                        placeholder="Minimum 8 characters"
+                        className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-text-secondary mb-2">Confirm New Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                      <input
+                        type="password"
+                        value={fpConfirmPassword}
+                        onChange={(e) => setFpConfirmPassword(e.target.value)}
+                        required
+                        placeholder="Re-type new password"
+                        className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-indigo-600 hover:opacity-95 text-white font-medium text-sm flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all"
+                  >
+                    {loading ? "Updating Password..." : "Update Password & Sign In"}{" "}
+                    <CheckCircle2 className="w-4 h-4" />
+                  </button>
+                </form>
+              )}
+            </motion.div>
+          )}
         </AnimatePresence>
+
       </motion.div>
     </div>
   );
