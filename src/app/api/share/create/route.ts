@@ -6,6 +6,8 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import fs from "fs";
 import { resolveClientIp } from "@/lib/security";
+import { encryptSecret } from "@/lib/kms";
+import { sendShareNotificationEmail, EmailDeliveryMode } from "@/lib/email-service";
 
 export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
@@ -32,6 +34,8 @@ export async function POST(req: NextRequest) {
       allowedGeos,
       watermarkText,
       stegoEnabled = false,
+      sendEmailNotification = false,
+      emailDeliveryMode = "SEPARATE", // "COMBINED" | "SEPARATE" | "LINK_ONLY"
     } = body;
 
     // Support both single fileId and multiple fileIds (up to 20 files per link)
@@ -114,9 +118,13 @@ export async function POST(req: NextRequest) {
 
     // Process Password
     let passwordHash = null;
+    let encryptedPassword = null;
     if (isPasswordRequired && password) {
       const salt = await bcrypt.genSalt(10);
       passwordHash = await bcrypt.hash(password, salt);
+      // Encrypt the password using KMS envelope encryption so the backend can email it to recipient
+      // without ever storing plaintext passwords in the database
+      encryptedPassword = encryptSecret(password);
     }
 
     // Process OTP
@@ -174,6 +182,9 @@ export async function POST(req: NextRequest) {
         expiresAt: expiresAt ? new Date(expiresAt) : null,
         maxDownloads: maxDownloads ? parseInt(maxDownloads) : null,
         passwordHash,
+        encryptedPassword,
+        emailNotificationSent: false,
+        emailDeliveryMode: sendEmailNotification ? (emailDeliveryMode || "SEPARATE") : null,
         otpSecret,
         otpEnabled: isOtpRequired,
         allowedIps: allowedIps || null,
@@ -225,6 +236,42 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    // Optional automated email notification delivery to recipient
+    let emailDispatchResult = null;
+    if (sendEmailNotification && sanitizedRecipientEmail) {
+      const reqHeaders = req.headers;
+      const host = reqHeaders.get("x-forwarded-host") || reqHeaders.get("host") || "localhost:3000";
+      const proto = reqHeaders.get("x-forwarded-proto") || "http";
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
+      const shareUrl = `${baseUrl.replace(/\/$/, "")}/download/${shareLink.id}`;
+
+      emailDispatchResult = await sendShareNotificationEmail({
+        recipientEmail: sanitizedRecipientEmail,
+        senderEmail: sessionUser.email,
+        shareUrl,
+        shareLinkId: shareLink.id,
+        fileNames: orderedFiles.map((f) => f.fileName),
+        fileCount: orderedFiles.length,
+        password: password || null,
+        authMethod,
+        transferMode: shareLink.transferMode as "STANDARD" | "BLOCKCHAIN",
+        expiresAt: shareLink.expiresAt,
+        maxDownloads: shareLink.maxDownloads,
+        deliveryMode: (emailDeliveryMode as EmailDeliveryMode) || "SEPARATE",
+        clientIp: ip,
+      });
+
+      if (emailDispatchResult.success) {
+        await db.shareLink.update({
+          where: { id: shareLink.id },
+          data: {
+            emailNotificationSent: true,
+            emailDeliveryMode: emailDispatchResult.deliveryMode,
+          },
+        });
+      }
+    }
+
     // Fetch newly attached blockchain proof if created
     const proof = await db.blockchainProof.findFirst({
       where: { shareLinkId: shareLink.id },
@@ -246,6 +293,8 @@ export async function POST(req: NextRequest) {
         })),
         transferMode: shareLink.transferMode,
         recipientEmail: shareLink.recipientEmail,
+        emailNotificationSent: emailDispatchResult ? emailDispatchResult.success : false,
+        emailDeliveryMode: emailDispatchResult ? emailDispatchResult.deliveryMode : null,
         status: shareLink.status,
         expiresAt: shareLink.expiresAt,
         maxDownloads: shareLink.maxDownloads,
@@ -256,6 +305,13 @@ export async function POST(req: NextRequest) {
         stegoPayload: shareLink.stegoPayload,
         watermarkText: shareLink.watermarkText,
       },
+      emailNotification: emailDispatchResult ? {
+        sent: emailDispatchResult.success,
+        deliveryMode: emailDispatchResult.deliveryMode,
+        messagesSent: emailDispatchResult.messagesSent,
+        simulated: emailDispatchResult.simulated,
+        error: emailDispatchResult.error,
+      } : null,
       blockchainProof: proof ? {
         proofId: proof.proofId,
         documentHash: proof.documentHash,

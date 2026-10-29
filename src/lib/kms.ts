@@ -102,3 +102,61 @@ export function generateKeyVerificationToken(dekHex: string, linkId: string): st
     .update(`link-auth-token::${linkId}`)
     .digest("hex");
 }
+
+/**
+ * Reversibly encrypts an arbitrary secret (such as a recipient download password)
+ * using the KMS Master Key (AES-256-GCM envelope).
+ * Plaintext passwords are never stored in the database.
+ */
+export function encryptSecret(secret: string): string {
+  if (!secret) return "";
+  const kek = getMasterKEK();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", kek, iv);
+
+  const encrypted = Buffer.concat([
+    cipher.update(Buffer.from(secret, "utf-8")),
+    cipher.final(),
+  ]);
+  const authTag = cipher.getAuthTag();
+
+  const pkg: EncryptedKeyPackage = {
+    version: "1.0",
+    algorithm: "AES-256-GCM",
+    iv: iv.toString("hex"),
+    authTag: authTag.toString("hex"),
+    ciphertext: encrypted.toString("hex"),
+  };
+
+  return JSON.stringify(pkg);
+}
+
+/**
+ * Decrypts a secret previously encrypted with encryptSecret using the KMS Master Key.
+ * Only executed securely on the backend when re-dispatching credentials.
+ */
+export function decryptSecret(packageJson: string): string {
+  if (!packageJson) return "";
+  try {
+    const pkg: EncryptedKeyPackage = JSON.parse(packageJson);
+    if (pkg.algorithm !== "AES-256-GCM" || !pkg.iv || !pkg.authTag || !pkg.ciphertext) {
+      throw new Error("Malformed or unsupported secret package format");
+    }
+
+    const kek = getMasterKEK();
+    const iv = Buffer.from(pkg.iv, "hex");
+    const authTag = Buffer.from(pkg.authTag, "hex");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", kek, iv);
+    decipher.setAuthTag(authTag);
+
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(pkg.ciphertext, "hex")),
+      decipher.final(),
+    ]);
+
+    return decrypted.toString("utf-8");
+  } catch (error) {
+    throw new Error("Failed to decrypt secret: verification failed or invalid secret package");
+  }
+}
+

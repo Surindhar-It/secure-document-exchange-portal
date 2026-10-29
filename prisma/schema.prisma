@@ -67,8 +67,11 @@ model ShareLink {
   maxDownloads     Int?
   downloadCount    Int               @default(0)
   authMethod       String            @default("NONE") // NONE, PASSWORD, EMAIL_OTP, BOTH
-  passwordHash     String?           // Optional hashed password to access sharing link
-  otpSecret        String?           // Optional OTP secret for access link verification
+  passwordHash          String?           // Optional hashed password (bcrypt) to access sharing link
+  encryptedPassword     String?           // AES-256-GCM encrypted password under KMS_MASTER_KEY for secure email dispatch
+  emailNotificationSent Boolean           @default(false)
+  emailDeliveryMode     String?           // "COMBINED" | "SEPARATE" | "LINK_ONLY"
+  otpSecret             String?           // Optional OTP secret for access link verification
   otpEnabled       Boolean           @default(false)
   deviceRequired   Boolean           @default(false)
   riskThreshold    Float?            @default(0.7)

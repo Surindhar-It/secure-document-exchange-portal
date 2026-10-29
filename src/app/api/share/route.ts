@@ -43,7 +43,16 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json({ links });
+    const sanitizedLinks = links.map((link) => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { passwordHash, encryptedPassword, otpSecret, ...safeLink } = link;
+      return {
+        ...safeLink,
+        hasPassword: !!passwordHash,
+      };
+    });
+
+    return NextResponse.json({ links: sanitizedLinks });
   } catch (error) {
     console.error("List links error:", error);
     return NextResponse.json({ error: "Failed to retrieve sharing links" }, { status: 500 });

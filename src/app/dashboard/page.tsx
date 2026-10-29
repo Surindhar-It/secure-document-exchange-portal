@@ -71,6 +71,9 @@ export default function DashboardPage() {
   const [createdStegoPayload, setCreatedStegoPayload] = useState<string | null>(null);
   const [generatedShareUrl, setGeneratedShareUrl] = useState("");
   const [generatedHexKey, setGeneratedHexKey] = useState("");
+  const [shareSendEmail, setShareSendEmail] = useState(true);
+  const [shareEmailDeliveryMode, setShareEmailDeliveryMode] = useState<"SEPARATE" | "COMBINED">("SEPARATE");
+  const [resendingLinkId, setResendingLinkId] = useState<string | null>(null);
 
   // Blockchain Verification Modal states
   const [selectedVerifyLink, setSelectedVerifyLink] = useState<any | null>(null);
@@ -298,6 +301,8 @@ export default function DashboardPage() {
     setShareStegoEnabled(false);
     setCreatedStegoPayload(null);
     setGeneratedShareUrl("");
+    setShareSendEmail(true);
+    setShareEmailDeliveryMode("SEPARATE");
 
     // Retrieve stored encryption key or generate fallback
     try {
@@ -418,6 +423,8 @@ export default function DashboardPage() {
           allowedGeos: shareAllowedGeos || null,
           watermarkText: shareWatermarkText || null,
           stegoEnabled: shareStegoEnabled,
+          sendEmailNotification: shareSendEmail && !!shareRecipientEmail.trim(),
+          emailDeliveryMode: shareEmailDeliveryMode,
         }),
       });
 
@@ -434,16 +441,44 @@ export default function DashboardPage() {
       const portalUrl = `${window.location.origin}/d/${data.shareLink.id}`;
       setGeneratedShareUrl(portalUrl);
 
-      showToast(
-        "success",
-        shareTransferMode === "BLOCKCHAIN"
-          ? `Blockchain transfer created with ${fileIdsPayload.length} file(s). Hash queued on-chain.`
-          : `Standard transfer link created with ${fileIdsPayload.length} file(s).`
-      );
+      let successMessage = shareTransferMode === "BLOCKCHAIN"
+        ? `Blockchain transfer created with ${fileIdsPayload.length} file(s). Hash queued on-chain.`
+        : `Standard transfer link created with ${fileIdsPayload.length} file(s).`;
+
+      if (data.emailNotification?.sent) {
+        successMessage += data.emailNotification.simulated
+          ? " (Email notification generated in simulated mode)."
+          : ` (${data.emailNotification.deliveryMode === "SEPARATE" ? "Link & Password sent in separate emails" : "Notification email sent"}).`;
+      }
+
+      showToast("success", successMessage);
       fetchDashboardData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast("error", msg);
+    }
+  };
+
+  const handleResendEmailNotification = async (linkId: string) => {
+    try {
+      setResendingLinkId(linkId);
+      showToast("info", "Dispatching email notification to recipient...");
+      const res = await fetch("/api/share/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shareLinkId: linkId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to dispatch email");
+      }
+      showToast("success", data.message || "Notification email dispatched successfully!");
+      fetchDashboardData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast("error", msg);
+    } finally {
+      setResendingLinkId(null);
     }
   };
 
@@ -928,8 +963,22 @@ export default function DashboardPage() {
                           {/* Recipient & Policy */}
                           <td className="p-4 text-text-secondary space-y-0.5 text-[10px]">
                             {link.recipientEmail ? (
-                              <div className="text-cyan-400 font-bold truncate max-w-[140px]">
-                                Bound: {link.recipientEmail}
+                              <div>
+                                <div className="text-cyan-400 font-bold truncate max-w-[140px]">
+                                  Bound: {link.recipientEmail}
+                                </div>
+                                <div className="mt-1">
+                                  {link.emailNotificationSent ? (
+                                    <span className="inline-flex items-center gap-1 text-[9px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">
+                                      <Mail className="w-2.5 h-2.5" />
+                                      {link.emailDeliveryMode === "SEPARATE" ? "Sent (Separate)" : "Sent (Combined)"}
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 text-[9px] font-mono text-text-secondary bg-cyber-dark border border-border-primary px-1.5 py-0.5 rounded">
+                                      <Mail className="w-2.5 h-2.5" /> Not Emailed
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             ) : (
                               <div className="text-text-secondary">Open / Ephemeral Link</div>
@@ -940,7 +989,7 @@ export default function DashboardPage() {
                                 <span>Expires: {new Date(link.expiresAt).toLocaleDateString()}</span>
                               </div>
                             )}
-                            {link.passwordHash && <div className="text-indigo-400">● Password Barrier</div>}
+                            {(link.hasPassword || link.passwordHash) && <div className="text-indigo-400">● Password Barrier</div>}
                             {link.otpEnabled && <div className="text-purple-400">● OTP Required</div>}
                           </td>
 
@@ -995,6 +1044,18 @@ export default function DashboardPage() {
 
                           {/* Actions */}
                           <td className="p-4 text-right space-x-2 whitespace-nowrap">
+                            {link.recipientEmail && !(link.isRevoked || link.status === "REVOKED") && (
+                              <button
+                                onClick={() => handleResendEmailNotification(link.id)}
+                                disabled={resendingLinkId === link.id}
+                                title="Resend download link & credentials to recipient"
+                                className="px-2.5 py-1.5 rounded-lg border border-indigo-500/30 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 disabled:opacity-50 text-[10px] font-mono font-bold cursor-pointer transition-all inline-flex items-center gap-1"
+                              >
+                                <Mail className="w-3 h-3" />
+                                {resendingLinkId === link.id ? "Sending..." : "Resend Email"}
+                              </button>
+                            )}
+
                             {isBlockchain && (
                               <button
                                 onClick={() => handleVerifyBlockchainProof(link)}
@@ -1003,6 +1064,7 @@ export default function DashboardPage() {
                                 <Check className="w-3 h-3" /> Verify On-Chain
                               </button>
                             )}
+
 
                             <button
                               onClick={() => handleToggleLinkRevoke(link.id, link.isRevoked || link.status === "REVOKED")}
@@ -1835,6 +1897,75 @@ export default function DashboardPage() {
                       />
                     </div>
                   )}
+
+                  {/* SECURE EMAIL SHARING CONFIGURATION */}
+                  <div className="space-y-3 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-xl">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-mono text-text-primary font-bold flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={shareSendEmail}
+                          onChange={(e) => setShareSendEmail(e.target.checked)}
+                          className="rounded border-border-primary text-indigo-500 focus:ring-indigo-500 w-4 h-4 accent-indigo-500"
+                        />
+                        <Mail className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Email Link & Credentials to Recipient</span>
+                      </label>
+                      <span className="text-[9px] font-mono text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 font-bold">
+                        Gmail SMTP / Cloud
+                      </span>
+                    </div>
+
+                    {shareSendEmail && (
+                      <div className="space-y-2 pt-2 border-t border-border-primary/40">
+                        {!shareRecipientEmail ? (
+                          <div className="text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 p-2 rounded-lg">
+                            ⚠️ Enter a recipient email address in the field above to dispatch notification.
+                          </div>
+                        ) : null}
+
+                        <div className="text-[10px] font-mono text-text-secondary">
+                          Select credential delivery isolation:
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div
+                            onClick={() => setShareEmailDeliveryMode("SEPARATE")}
+                            className={`p-2.5 rounded-xl border cursor-pointer font-mono text-[11px] transition-all flex flex-col justify-between ${
+                              shareEmailDeliveryMode === "SEPARATE"
+                                ? "bg-indigo-600/15 border-indigo-500 text-indigo-300 shadow-sm shadow-indigo-500/10"
+                                : "bg-cyber-dark border-border-primary text-text-secondary hover:border-indigo-500/30"
+                            }`}
+                          >
+                            <div className="font-bold flex items-center justify-between mb-1">
+                              <span>Separate Emails</span>
+                              <span className="text-[8px] bg-emerald-500/15 text-emerald-400 px-1 py-0.2 rounded border border-emerald-500/30">
+                                Recommended
+                              </span>
+                            </div>
+                            <span className="text-[9px] text-text-secondary leading-relaxed">
+                              Email #1 sends the download link. Email #2 delivers the password separately for two-channel security.
+                            </span>
+                          </div>
+
+                          <div
+                            onClick={() => setShareEmailDeliveryMode("COMBINED")}
+                            className={`p-2.5 rounded-xl border cursor-pointer font-mono text-[11px] transition-all flex flex-col justify-between ${
+                              shareEmailDeliveryMode === "COMBINED"
+                                ? "bg-indigo-600/15 border-indigo-500 text-indigo-300 shadow-sm shadow-indigo-500/10"
+                                : "bg-cyber-dark border-border-primary text-text-secondary hover:border-indigo-500/30"
+                            }`}
+                          >
+                            <div className="font-bold mb-1">Combined Email</div>
+                            <span className="text-[9px] text-text-secondary leading-relaxed">
+                              Download link and access password delivered together in a single consolidated email.
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
 
                   {/* Expiration Presets */}
                   <div>
