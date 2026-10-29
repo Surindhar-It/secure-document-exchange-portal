@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
       "localhost:3000";
     const proto = reqHeaders.get("x-forwarded-proto") || "http";
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
-    const shareUrl = `${baseUrl.replace(/\/$/, "")}/download/${shareLink.id}`;
+    const shareUrl = `${baseUrl.replace(/\/$/, "")}/d/${shareLink.id}`;
 
     const fileNames = shareLink.files.map((sf) => sf.file.fileName);
 

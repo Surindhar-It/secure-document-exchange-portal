@@ -243,7 +243,7 @@ export async function POST(req: NextRequest) {
       const host = reqHeaders.get("x-forwarded-host") || reqHeaders.get("host") || "localhost:3000";
       const proto = reqHeaders.get("x-forwarded-proto") || "http";
       const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
-      const shareUrl = `${baseUrl.replace(/\/$/, "")}/download/${shareLink.id}`;
+      const shareUrl = `${baseUrl.replace(/\/$/, "")}/d/${shareLink.id}`;
 
       emailDispatchResult = await sendShareNotificationEmail({
         recipientEmail: sanitizedRecipientEmail,
