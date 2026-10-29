@@ -31,6 +31,47 @@ export interface DeliveryResult {
   error?: string;
 }
 
+export const DEFAULT_PORTAL_BASE_URL = "https://secure-document-exchange-portal.onrender.com";
+
+/**
+ * Resolves the portal base URL, cleanly ignoring dummy placeholders
+ * such as 'your-service-name.onrender.com' and defaulting to the production portal URL.
+ */
+export function resolvePortalBaseUrl(reqHeaders?: Headers | null): string {
+  // 1. Check NEXT_PUBLIC_BASE_URL environment variable
+  const envUrl = process.env.NEXT_PUBLIC_BASE_URL?.trim();
+  if (
+    envUrl &&
+    !envUrl.includes("your-service-name") &&
+    !envUrl.includes("example.com") &&
+    !(process.env.NODE_ENV === "production" && (envUrl.includes("localhost") || envUrl.includes("127.0.0.1")))
+  ) {
+    return envUrl.replace(/\/$/, "");
+  }
+
+  // 2. Check incoming request headers
+  if (reqHeaders) {
+    const host = reqHeaders.get("x-forwarded-host") || reqHeaders.get("host");
+    const proto = reqHeaders.get("x-forwarded-proto") || "https";
+    if (
+      host &&
+      !host.includes("your-service-name") &&
+      !host.includes("example.com") &&
+      !(process.env.NODE_ENV === "production" && (host.includes("localhost") || host.includes("127.0.0.1")))
+    ) {
+      return `${proto}://${host}`.replace(/\/$/, "");
+    }
+  }
+
+  // 3. Local dev fallback
+  if (process.env.NODE_ENV !== "production") {
+    return "http://localhost:3000";
+  }
+
+  // 4. Default to live portal
+  return DEFAULT_PORTAL_BASE_URL;
+}
+
 /**
  * Check if a configuration value is present and not a template placeholder
  */
@@ -307,10 +348,19 @@ function buildLinkEmailHtml({
     ? new Date(expiresAt).toUTCString()
     : "No expiration set (Never expires)";
 
-  const primaryRecoveryUrl = recoveryUrl || (
-    shareUrl.includes("/d/")
-      ? `${shareUrl.split("/d/")[0]}/recovery?id=${shareLinkId}${encryptedPasswordToken ? `&cipher=${encodeURIComponent(encryptedPasswordToken)}` : ""}`
-      : `${shareUrl}/recovery?id=${shareLinkId}`
+  // Sanitize URLs to completely eliminate any dummy placeholders (e.g. your-service-name)
+  const cleanShareUrl = shareUrl
+    .replace(/https?:\/\/[^/]*your-service-name[^/]*/gi, DEFAULT_PORTAL_BASE_URL)
+    .trim();
+
+  const rawRecoveryUrl = recoveryUrl
+    ? recoveryUrl.replace(/https?:\/\/[^/]*your-service-name[^/]*/gi, DEFAULT_PORTAL_BASE_URL).trim()
+    : "";
+
+  const primaryRecoveryUrl = rawRecoveryUrl || (
+    cleanShareUrl.includes("/d/")
+      ? `${cleanShareUrl.split("/d/")[0]}/recovery?id=${shareLinkId}${encryptedPasswordToken ? `&cipher=${encodeURIComponent(encryptedPasswordToken)}` : ""}`
+      : `${DEFAULT_PORTAL_BASE_URL}/recovery?id=${shareLinkId}${encryptedPasswordToken ? `&cipher=${encodeURIComponent(encryptedPasswordToken)}` : ""}`
   );
 
   return `
@@ -363,12 +413,12 @@ function buildLinkEmailHtml({
               Access and download your encrypted file package directly through the portal:
             </p>
             <div style="margin-bottom: 10px;">
-              <a href="${shareUrl}" style="display: inline-block; background: #1e1b4b; border: 1px solid #4338ca; color: #c7d2fe; text-decoration: none; font-weight: 700; font-size: 13px; padding: 10px 20px; border-radius: 8px;">
+              <a href="${cleanShareUrl}" style="display: inline-block; background: #1e1b4b; border: 1px solid #4338ca; color: #c7d2fe; text-decoration: none; font-weight: 700; font-size: 13px; padding: 10px 20px; border-radius: 8px;">
                 Open Direct File Link &rarr;
               </a>
             </div>
             <div style="font-size: 11px; color: #6b7280; font-family: monospace; word-break: break-all;">
-              Direct URL: <a href="${shareUrl}" style="color: #818cf8;">${shareUrl}</a>
+              Direct URL: <a href="${cleanShareUrl}" style="color: #818cf8;">${cleanShareUrl}</a>
             </div>
           </div>
 
@@ -545,20 +595,25 @@ export async function sendShareNotificationEmail(
     }
   }
 
-  const baseUrl = shareUrl.includes("/d/")
-    ? shareUrl.split("/d/")[0]
-    : (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+  const cleanShareUrl = shareUrl
+    .replace(/https?:\/\/[^/]*your-service-name[^/]*/gi, DEFAULT_PORTAL_BASE_URL)
+    .trim();
+
+  const baseUrl = cleanShareUrl.includes("/d/")
+    ? cleanShareUrl.split("/d/")[0]
+    : resolvePortalBaseUrl();
 
   const effectiveRecoveryUrl =
-    opts.recoveryUrl ||
-    `${baseUrl}/recovery?id=${shareLinkId}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`;
+    (opts.recoveryUrl && !opts.recoveryUrl.includes("your-service-name"))
+      ? opts.recoveryUrl.trim()
+      : `${baseUrl}/recovery?id=${shareLinkId}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`;
 
   const hasPassword = !!(cipherToken || (password && password.trim().length > 0));
 
   try {
     // Consolidated Single Email Delivery - Exactly 1 email sent per transfer
     const linkHtml = buildLinkEmailHtml({
-      shareUrl,
+      shareUrl: cleanShareUrl,
       recoveryUrl: effectiveRecoveryUrl,
       shareLinkId,
       senderEmail,
@@ -580,7 +635,7 @@ export async function sendShareNotificationEmail(
       `SecureDocX: ${fileCount} file(s) securely shared with you.\n\n` +
       `==================================================\n` +
       `1. DIRECT FILE LINK:\n` +
-      `${shareUrl}\n\n` +
+      `${cleanShareUrl}\n\n` +
       `2. RECOVERY PORTAL LINK (AUTO-DECRYPT):\n` +
       `${effectiveRecoveryUrl}\n\n` +
       (cipherToken

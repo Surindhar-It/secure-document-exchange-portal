@@ -7,7 +7,7 @@ import crypto from "crypto";
 import fs from "fs";
 import { resolveClientIp } from "@/lib/security";
 import { encryptSecret, toCipherToken } from "@/lib/kms";
-import { sendShareNotificationEmail, EmailDeliveryMode } from "@/lib/email-service";
+import { sendShareNotificationEmail, EmailDeliveryMode, resolvePortalBaseUrl } from "@/lib/email-service";
 
 export async function POST(req: NextRequest) {
   const ip = resolveClientIp(req);
@@ -241,11 +241,7 @@ export async function POST(req: NextRequest) {
     const cipherToken = encryptedPassword ? toCipherToken(encryptedPassword) : null;
 
     if (sendEmailNotification && sanitizedRecipientEmail) {
-      const reqHeaders = req.headers;
-      const host = reqHeaders.get("x-forwarded-host") || reqHeaders.get("host") || "localhost:3000";
-      const proto = reqHeaders.get("x-forwarded-proto") || "http";
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
-      const cleanBaseUrl = baseUrl.replace(/\/$/, "");
+      const cleanBaseUrl = resolvePortalBaseUrl(req.headers);
       const shareUrl = `${cleanBaseUrl}/d/${shareLink.id}`;
       const recoveryUrl = `${cleanBaseUrl}/recovery?id=${shareLink.id}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`;
 
