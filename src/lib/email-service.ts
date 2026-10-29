@@ -307,30 +307,11 @@ function buildLinkEmailHtml({
     ? new Date(expiresAt).toUTCString()
     : "No expiration set (Never expires)";
 
-  let passwordBanner = "";
-  if (hasPassword && encryptedPasswordToken) {
-    passwordBanner = `
-      <div style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 18px; margin: 20px 0;">
-        <div style="font-weight: 700; color: #a5b4fc; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">
-          🔐 Encrypted Password Token (Zero-Knowledge AES-256-GCM)
-        </div>
-        <p style="font-size: 12px; color: #9ca3af; margin: 0 0 10px 0; line-height: 1.5;">
-          For security, your download password was encrypted before transmission. You can decrypt it securely in the Recovery Portal:
-        </p>
-        <div style="font-family: 'Courier New', Courier, monospace; font-size: 13px; font-weight: 700; letter-spacing: 1px; color: #34d399; background: #0b0f19; padding: 12px 14px; border-radius: 8px; word-break: break-all; border: 1px solid #374151; user-select: all;">
-          ${encryptedPasswordToken}
-        </div>
-        <div style="font-size: 11px; color: #818cf8; margin-top: 8px;">
-          💡 Tip: The button below will automatically load and decrypt this token for you in the Recovery Portal.
-        </div>
-      </div>
-    `;
-  }
-
-  const primaryTargetUrl = recoveryUrl || shareUrl;
-  const primaryButtonLabel = hasPassword && recoveryUrl
-    ? "🔓 Decrypt Password & Access Files &rarr;"
-    : "Access Secure Files &rarr;";
+  const primaryRecoveryUrl = recoveryUrl || (
+    shareUrl.includes("/d/")
+      ? `${shareUrl.split("/d/")[0]}/recovery?id=${shareLinkId}${encryptedPasswordToken ? `&cipher=${encodeURIComponent(encryptedPasswordToken)}` : ""}`
+      : `${shareUrl}/recovery?id=${shareLinkId}`
+  );
 
   return `
     <!DOCTYPE html>
@@ -340,7 +321,7 @@ function buildLinkEmailHtml({
         <title>Secure Files Shared With You</title>
       </head>
       <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #f3f4f6; padding: 24px; margin: 0;">
-        <div style="max-width: 560px; margin: 0 auto; background-color: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+        <div style="max-width: 580px; margin: 0 auto; background-color: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
           
           <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;">
             <span style="font-size: 11px; font-family: monospace; text-transform: uppercase; padding: 4px 10px; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); color: #818cf8; border-radius: 9999px; font-weight: bold;">
@@ -370,13 +351,68 @@ function buildLinkEmailHtml({
             ${extraFilesNotice}
           </div>
 
-          ${passwordBanner}
-
-          <div style="text-align: center; margin: 28px 0;">
-            <a href="${primaryTargetUrl}" style="display: inline-block; background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); color: #ffffff; text-decoration: none; font-weight: 700; font-size: 15px; padding: 14px 32px; border-radius: 10px; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);">
-              ${primaryButtonLabel}
-            </a>
+          <!-- SECTION 1: DIRECT FILE DOWNLOAD LINK -->
+          <div style="background: #0b0f19; border: 1px solid #1f2937; border-radius: 12px; padding: 18px; margin: 18px 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <span style="font-weight: 700; color: #818cf8; font-size: 13px; font-family: monospace; text-transform: uppercase; letter-spacing: 1px;">
+                1. 📁 Direct File Link
+              </span>
+              <span style="font-size: 10px; color: #9ca3af; font-family: monospace;">Portal Access</span>
+            </div>
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 12px 0; line-height: 1.5;">
+              Access and download your encrypted file package directly through the portal:
+            </p>
+            <div style="margin-bottom: 10px;">
+              <a href="${shareUrl}" style="display: inline-block; background: #1e1b4b; border: 1px solid #4338ca; color: #c7d2fe; text-decoration: none; font-weight: 700; font-size: 13px; padding: 10px 20px; border-radius: 8px;">
+                Open Direct File Link &rarr;
+              </a>
+            </div>
+            <div style="font-size: 11px; color: #6b7280; font-family: monospace; word-break: break-all;">
+              Direct URL: <a href="${shareUrl}" style="color: #818cf8;">${shareUrl}</a>
+            </div>
           </div>
+
+          <!-- SECTION 2: RECOVERY PORTAL LINK -->
+          <div style="background: #0b0f19; border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 12px; padding: 18px; margin: 18px 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <span style="font-weight: 700; color: #34d399; font-size: 13px; font-family: monospace; text-transform: uppercase; letter-spacing: 1px;">
+                2. 🔓 Recovery Portal Link
+              </span>
+              <span style="font-size: 10px; color: #34d399; font-family: monospace; background: rgba(16, 185, 129, 0.15); padding: 2px 6px; border-radius: 4px;">Self-Healing Decryptor</span>
+            </div>
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 12px 0; line-height: 1.5;">
+              Use the Recovery Portal to automatically decrypt your password cipher, verify document integrity, and reconstruct files:
+            </p>
+            <div style="margin-bottom: 10px;">
+              <a href="${primaryRecoveryUrl}" style="display: inline-block; background: linear-gradient(135deg, #059669 0%, #10b981 100%); color: #ffffff; text-decoration: none; font-weight: 700; font-size: 13px; padding: 10px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);">
+                Open Recovery Portal (Auto-Decrypt) &rarr;
+              </a>
+            </div>
+            <div style="font-size: 11px; color: #6b7280; font-family: monospace; word-break: break-all;">
+              Recovery URL: <a href="${primaryRecoveryUrl}" style="color: #34d399;">${primaryRecoveryUrl}</a>
+            </div>
+          </div>
+
+          <!-- SECTION 3: ENCRYPTED PASSWORD CIPHER TOKEN -->
+          ${encryptedPasswordToken ? `
+          <div style="background: #0b0f19; border: 1px solid rgba(99, 102, 241, 0.35); border-radius: 12px; padding: 18px; margin: 18px 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <span style="font-weight: 700; color: #a5b4fc; font-size: 13px; font-family: monospace; text-transform: uppercase; letter-spacing: 1px;">
+                3. 🔐 Encrypted Password Token
+              </span>
+              <span style="font-size: 10px; color: #a5b4fc; font-family: monospace; background: rgba(99, 102, 241, 0.15); padding: 2px 6px; border-radius: 4px;">AES-256-GCM Envelope</span>
+            </div>
+            <p style="font-size: 12px; color: #9ca3af; margin: 0 0 10px 0; line-height: 1.5;">
+              For security, the download password was encrypted before transmission. The Recovery Portal link above will automatically load and decrypt this token for you:
+            </p>
+            <div style="font-family: 'Courier New', Courier, monospace; font-size: 12px; font-weight: 700; letter-spacing: 1px; color: #34d399; background: #030712; padding: 12px 14px; border-radius: 8px; word-break: break-all; border: 1px solid #374151; user-select: all; line-height: 1.6;">
+              ${encryptedPasswordToken}
+            </div>
+            <div style="font-size: 11px; color: #818cf8; margin-top: 8px;">
+              💡 You can also copy and paste this token directly into the Decryptor card on the Recovery Portal.
+            </div>
+          </div>
+          ` : ""}
 
           <div style="background: #0b0f19; border: 1px solid #1f2937; border-radius: 10px; padding: 14px; margin-top: 24px; font-size: 12px; color: #9ca3af; line-height: 1.6;">
             <div><strong>Transfer ID:</strong> <span style="font-family: monospace; color: #e5e7eb;">${shareLinkId}</span></div>
@@ -385,9 +421,7 @@ function buildLinkEmailHtml({
             ${maxDownloads ? `<div><strong>Download Quota:</strong> <span style="font-family: monospace; color: #e5e7eb;">${maxDownloads} download(s) allowed</span></div>` : ""}
           </div>
 
-          <div style="border-top: 1px solid #1f2937; padding-top: 20px; margin-top: 24px; font-size: 11px; color: #6b7280; font-family: monospace; line-height: 1.5;">
-            ${recoveryUrl ? `Recovery & Decrypt Portal: <a href="${recoveryUrl}" style="color: #34d399; word-break: break-all;">${recoveryUrl}</a><br><br>` : ""}
-            Direct URL: <a href="${shareUrl}" style="color: #818cf8; word-break: break-all;">${shareUrl}</a><br><br>
+          <div style="border-top: 1px solid #1f2937; padding-top: 20px; margin-top: 24px; font-size: 11px; color: #6b7280; font-family: monospace; line-height: 1.5; text-align: center;">
             Security Standard: AES-256-GCM Envelope Encryption &bull; SHA-256 Tamper-Proof Audit
           </div>
 
@@ -511,12 +545,13 @@ export async function sendShareNotificationEmail(
     }
   }
 
-  // Build the Recovery Portal URL with pre-populated id and cipher token
+  const baseUrl = shareUrl.includes("/d/")
+    ? shareUrl.split("/d/")[0]
+    : (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+
   const effectiveRecoveryUrl =
     opts.recoveryUrl ||
-    (shareUrl.includes("/d/")
-      ? `${shareUrl.split("/d/")[0]}/recovery?id=${shareLinkId}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`
-      : undefined);
+    `${baseUrl}/recovery?id=${shareLinkId}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`;
 
   const hasPassword = !!(cipherToken || (password && password.trim().length > 0));
 
@@ -541,10 +576,21 @@ export async function sendShareNotificationEmail(
       ? `[SecureDocX] Secure File Bundle & Encrypted Password (${fileCount} file${fileCount > 1 ? "s" : ""})`
       : `[SecureDocX] Secure File Bundle Shared With You (${fileCount} file${fileCount > 1 ? "s" : ""})`;
 
-    const textContent = `SecureDocX: ${fileCount} file(s) securely shared with you.\n\n` +
-      `Access in Recovery Portal: ${effectiveRecoveryUrl || shareUrl}\n` +
-      (cipherToken ? `\nEncrypted Password Token: ${cipherToken}\nDecrypt and download in Recovery Portal: ${effectiveRecoveryUrl || shareUrl}\n` : "") +
-      `\nDirect Download Link: ${shareUrl}\nTransfer ID: ${shareLinkId}`;
+    const textContent =
+      `SecureDocX: ${fileCount} file(s) securely shared with you.\n\n` +
+      `==================================================\n` +
+      `1. DIRECT FILE LINK:\n` +
+      `${shareUrl}\n\n` +
+      `2. RECOVERY PORTAL LINK (AUTO-DECRYPT):\n` +
+      `${effectiveRecoveryUrl}\n\n` +
+      (cipherToken
+        ? `3. ENCRYPTED PASSWORD TOKEN (ZERO-KNOWLEDGE):\n` +
+          `${cipherToken}\n` +
+          `(Open the Recovery Portal link above to automatically decrypt this token into your download password)\n\n`
+        : "") +
+      `==================================================\n` +
+      `Transfer ID: ${shareLinkId}\n` +
+      `Security Standard: AES-256-GCM Envelope Encryption & SHA-256 Tamper-Proof Audit`;
 
     const result = await dispatchSingleEmail({
       to: recipientEmail,
