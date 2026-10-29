@@ -487,7 +487,7 @@ export async function sendShareNotificationEmail(
     transferMode,
     expiresAt,
     maxDownloads,
-    deliveryMode = "SEPARATE",
+    deliveryMode = "COMBINED",
     clientIp,
   } = opts;
 

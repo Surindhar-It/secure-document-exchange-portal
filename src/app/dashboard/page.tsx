@@ -72,7 +72,7 @@ export default function DashboardPage() {
   const [generatedShareUrl, setGeneratedShareUrl] = useState("");
   const [generatedHexKey, setGeneratedHexKey] = useState("");
   const [shareSendEmail, setShareSendEmail] = useState(true);
-  const [shareEmailDeliveryMode, setShareEmailDeliveryMode] = useState<"SEPARATE" | "COMBINED">("SEPARATE");
+  const [shareEmailDeliveryMode, setShareEmailDeliveryMode] = useState<"COMBINED">("COMBINED");
   const [resendingLinkId, setResendingLinkId] = useState<string | null>(null);
 
   // Blockchain Verification Modal states
@@ -302,7 +302,7 @@ export default function DashboardPage() {
     setCreatedStegoPayload(null);
     setGeneratedShareUrl("");
     setShareSendEmail(true);
-    setShareEmailDeliveryMode("SEPARATE");
+    setShareEmailDeliveryMode("COMBINED");
 
     // Retrieve stored encryption key or generate fallback
     try {
@@ -448,7 +448,7 @@ export default function DashboardPage() {
       if (data.emailNotification?.sent) {
         successMessage += data.emailNotification.simulated
           ? " (Email notification generated in simulated mode)."
-          : ` (${data.emailNotification.deliveryMode === "SEPARATE" ? "Link & Password sent in separate emails" : "Notification email sent"}).`;
+          : " (Notification email sent).";
       }
 
       showToast("success", successMessage);
@@ -971,7 +971,7 @@ export default function DashboardPage() {
                                   {link.emailNotificationSent ? (
                                     <span className="inline-flex items-center gap-1 text-[9px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">
                                       <Mail className="w-2.5 h-2.5" />
-                                      {link.emailDeliveryMode === "SEPARATE" ? "Sent (Separate)" : "Sent (Combined)"}
+                                      Email Sent
                                     </span>
                                   ) : (
                                     <span className="inline-flex items-center gap-1 text-[9px] font-mono text-text-secondary bg-cyber-dark border border-border-primary px-1.5 py-0.5 rounded">
@@ -1922,46 +1922,12 @@ export default function DashboardPage() {
                           <div className="text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 p-2 rounded-lg">
                             ⚠️ Enter a recipient email address in the field above to dispatch notification.
                           </div>
-                        ) : null}
-
-                        <div className="text-[10px] font-mono text-text-secondary">
-                          Select credential delivery isolation:
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div
-                            onClick={() => setShareEmailDeliveryMode("SEPARATE")}
-                            className={`p-2.5 rounded-xl border cursor-pointer font-mono text-[11px] transition-all flex flex-col justify-between ${
-                              shareEmailDeliveryMode === "SEPARATE"
-                                ? "bg-indigo-600/15 border-indigo-500 text-indigo-300 shadow-sm shadow-indigo-500/10"
-                                : "bg-cyber-dark border-border-primary text-text-secondary hover:border-indigo-500/30"
-                            }`}
-                          >
-                            <div className="font-bold flex items-center justify-between mb-1">
-                              <span>Separate Emails</span>
-                              <span className="text-[8px] bg-emerald-500/15 text-emerald-400 px-1 py-0.2 rounded border border-emerald-500/30">
-                                Recommended
-                              </span>
-                            </div>
-                            <span className="text-[9px] text-text-secondary leading-relaxed">
-                              Email #1 sends the download link. Email #2 delivers the password separately for two-channel security.
-                            </span>
+                        ) : (
+                          <div className="text-[10px] font-mono text-text-secondary bg-cyber-dark/60 p-2.5 rounded-lg border border-border-primary flex items-start gap-2">
+                            <span className="text-indigo-400 text-xs">✉️</span>
+                            <span>A single combined email containing the recovery link and encrypted password cipher token will be delivered to <strong className="text-indigo-300 font-bold">{shareRecipientEmail}</strong>.</span>
                           </div>
-
-                          <div
-                            onClick={() => setShareEmailDeliveryMode("COMBINED")}
-                            className={`p-2.5 rounded-xl border cursor-pointer font-mono text-[11px] transition-all flex flex-col justify-between ${
-                              shareEmailDeliveryMode === "COMBINED"
-                                ? "bg-indigo-600/15 border-indigo-500 text-indigo-300 shadow-sm shadow-indigo-500/10"
-                                : "bg-cyber-dark border-border-primary text-text-secondary hover:border-indigo-500/30"
-                            }`}
-                          >
-                            <div className="font-bold mb-1">Combined Email</div>
-                            <span className="text-[9px] text-text-secondary leading-relaxed">
-                              Download link and access password delivered together in a single consolidated email.
-                            </span>
-                          </div>
-                        </div>
+                        )}
                       </div>
                     )}
                   </div>

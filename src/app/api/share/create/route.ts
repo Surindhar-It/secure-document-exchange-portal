@@ -184,7 +184,7 @@ export async function POST(req: NextRequest) {
         passwordHash,
         encryptedPassword,
         emailNotificationSent: false,
-        emailDeliveryMode: sendEmailNotification ? (emailDeliveryMode || "SEPARATE") : null,
+        emailDeliveryMode: sendEmailNotification ? "COMBINED" : null,
         otpSecret,
         otpEnabled: isOtpRequired,
         allowedIps: allowedIps || null,
@@ -263,7 +263,7 @@ export async function POST(req: NextRequest) {
         transferMode: shareLink.transferMode as "STANDARD" | "BLOCKCHAIN",
         expiresAt: shareLink.expiresAt,
         maxDownloads: shareLink.maxDownloads,
-        deliveryMode: (emailDeliveryMode as EmailDeliveryMode) || "SEPARATE",
+        deliveryMode: "COMBINED",
         clientIp: ip,
       });
 
