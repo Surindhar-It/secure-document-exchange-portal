@@ -189,6 +189,8 @@ export async function sendOTPEmail(
     process.env.ALLOW_SIMULATED_OTP !== "false" ||
     process.env.NODE_ENV !== "production";
 
+  let lastError = "";
+
   // 1. PRIMARY DISPATCH: Nodemailer (Gmail SMTP / Custom SMTP)
   const transporter = createEmailTransporter();
   if (transporter) {
@@ -205,13 +207,23 @@ export async function sendOTPEmail(
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[EmailOTP] Nodemailer SMTP Delivery error / timeout:", msg);
+      if (msg.includes("ETIMEDOUT") || msg.includes("ESOCKET") || msg.includes("timeout")) {
+        lastError = "Gmail SMTP connection timed out. If running on Render Free tier, Render blocks outbound SMTP ports (465/587).";
+      } else {
+        lastError = `Gmail SMTP error: ${msg}`;
+      }
       // Fall through to HTTP APIs if SMTP fails or is blocked on cloud host
     }
   }
 
   // 2. SECONDARY CLOUD DISPATCH: Resend HTTP API (Port 443 HTTPS - Works universally on Render Free Tier!)
   const resendApiKey = process.env.RESEND_API_KEY?.trim();
-  if (resendApiKey && isConfigured(resendApiKey)) {
+  const isRealResendKey = resendApiKey && resendApiKey.startsWith("re_") && resendApiKey.length > 5;
+  if (resendApiKey && !isRealResendKey) {
+    console.warn("[EmailOTP] RESEND_API_KEY does not start with 're_' (detected Render/invalid token). Skipping Resend HTTP API call.");
+  }
+
+  if (isRealResendKey) {
     try {
       const resendFrom = process.env.RESEND_FROM || "SecureDocX <onboarding@resend.dev>";
       const resendRes = await fetch("https://api.resend.com/emails", {
@@ -236,6 +248,7 @@ export async function sendOTPEmail(
       } else {
         const errorDetail = resendData.message || JSON.stringify(resendData);
         console.error("[EmailOTP] Resend HTTP API error:", errorDetail);
+        lastError = `Resend API: ${errorDetail}`;
         if (allowSimulation) {
           return { success: true, simulated: true, error: `Resend API: ${errorDetail}` };
         }
@@ -244,6 +257,7 @@ export async function sendOTPEmail(
     } catch (resendErr: unknown) {
       const msg = resendErr instanceof Error ? resendErr.message : String(resendErr);
       console.error("[EmailOTP] Resend HTTP fetch failed:", msg);
+      lastError = `Resend API error: ${msg}`;
       if (allowSimulation) {
         return { success: true, simulated: true, error: msg };
       }
@@ -292,15 +306,23 @@ export async function sendOTPEmail(
 
 
   // 4. DEVELOPMENT & TESTING FALLBACK: Safe simulated delivery
-  console.log(`\n======================================================`);
-  console.log(`[SECUREDOCX EMAIL OTP SIMULATOR]`);
-  console.log(`To: ${recipientEmail}`);
-  console.log(`Link ID: ${linkId}`);
-  console.log(`OTP Code: ${otpCode}`);
-  console.log(`Validity: 5 minutes (300 seconds)`);
-  console.log(`======================================================\n`);
+  if (allowSimulation) {
+    console.log(`\n======================================================`);
+    console.log(`[SECUREDOCX EMAIL OTP SIMULATOR]`);
+    console.log(`To: ${recipientEmail}`);
+    console.log(`Link ID: ${linkId}`);
+    console.log(`OTP Code: ${otpCode}`);
+    console.log(`Validity: 5 minutes (300 seconds)`);
+    console.log(`======================================================\n`);
 
-  return { success: true, simulated: true };
+    return { success: true, simulated: true };
+  }
+
+  return {
+    success: false,
+    simulated: false,
+    error: lastError || "Failed to deliver email. No active SMTP connection or valid HTTP email API key found.",
+  };
 }
 
 /**

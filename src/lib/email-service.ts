@@ -99,6 +99,16 @@ function createEmailTransporter() {
   return null;
 }
 
+function isValidResendKey(key?: string | null): boolean {
+  if (!key) return false;
+  const trimmed = key.trim();
+  if (trimmed.startsWith("rnd_")) {
+    console.warn("[EmailService] RESEND_API_KEY starts with 'rnd_' (Render token). Resend API keys must start with 're_' from https://resend.com.");
+    return false;
+  }
+  return trimmed.startsWith("re_") && trimmed.length > 5;
+}
+
 /**
  * Dispatches a single email message through Resend (HTTPS), Brevo (HTTPS), SMTP, or Simulator
  */
@@ -116,6 +126,8 @@ async function dispatchSingleEmail({
   const allowSimulation =
     process.env.ALLOW_SIMULATED_OTP !== "false" ||
     process.env.NODE_ENV !== "production";
+
+  let lastError = "";
 
   // Tier 1: PRIMARY DISPATCH - Nodemailer (Gmail SMTP / Custom SMTP)
   const transporter = createEmailTransporter();
@@ -137,13 +149,18 @@ async function dispatchSingleEmail({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[EmailService] Nodemailer SMTP send error:", msg);
+      if (msg.includes("ETIMEDOUT") || msg.includes("ESOCKET") || msg.includes("timeout")) {
+        lastError = "Gmail SMTP connection timed out. If running on Render Free tier, Render blocks outbound SMTP ports (465/587).";
+      } else {
+        lastError = `Gmail SMTP error: ${msg}`;
+      }
       // Fall through to cloud HTTP APIs if SMTP fails or is blocked
     }
   }
 
   // Tier 2: Cloud Fallback - Resend HTTP API (Port 443 HTTPS)
   const resendApiKey = process.env.RESEND_API_KEY?.trim();
-  if (resendApiKey && isConfigured(resendApiKey)) {
+  if (resendApiKey && isValidResendKey(resendApiKey)) {
     try {
       const resendFrom = process.env.RESEND_FROM || "SecureDocX <onboarding@resend.dev>";
       const res = await fetch("https://api.resend.com/emails", {
@@ -167,6 +184,7 @@ async function dispatchSingleEmail({
       } else {
         const errDetail = resData.message || JSON.stringify(resData);
         console.warn("[EmailService] Resend API error:", errDetail);
+        lastError = `Resend API: ${errDetail}`;
         if (allowSimulation) {
           return { success: true, simulated: true, error: `Resend: ${errDetail}` };
         }
@@ -175,6 +193,7 @@ async function dispatchSingleEmail({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[EmailService] Resend API request failed:", msg);
+      lastError = `Resend API error: ${msg}`;
       if (allowSimulation) {
         return { success: true, simulated: true, error: msg };
       }
@@ -225,12 +244,20 @@ async function dispatchSingleEmail({
 
 
   // Tier 4: Simulated Delivery
-  console.log(`\n======================================================`);
-  console.log(`[SECUREDOCX EMAIL DISPATCH SIMULATOR]`);
-  console.log(`To: ${to}`);
-  console.log(`Subject: ${subject}`);
-  console.log(`======================================================\n`);
-  return { success: true, simulated: true };
+  if (allowSimulation) {
+    console.log(`\n======================================================`);
+    console.log(`[SECUREDOCX EMAIL DISPATCH SIMULATOR]`);
+    console.log(`To: ${to}`);
+    console.log(`Subject: ${subject}`);
+    console.log(`======================================================\n`);
+    return { success: true, simulated: true };
+  }
+
+  return {
+    success: false,
+    simulated: false,
+    error: lastError || "Failed to dispatch email. No working SMTP connection or HTTP email API key found.",
+  };
 }
 
 /**
