@@ -14,6 +14,7 @@ export default function LoginPage() {
   
   // Form input fields
   const [email, setEmail] = useState("");
+  const [registerCountryCode, setRegisterCountryCode] = useState("+91");
   const [registerPhone, setRegisterPhone] = useState("");
   const [password, setPassword] = useState("");
   const [loginIdentifier, setLoginIdentifier] = useState("");
@@ -31,9 +32,9 @@ export default function LoginPage() {
   const [mfaCode, setMfaCode] = useState("");
 
   // Forgot Password / SMS OTP states
-
   const [fpStep, setFpStep] = useState<"request" | "verify" | "reset">("request");
   const [fpIdentifier, setFpIdentifier] = useState("");
+  const [fpCountryCode, setFpCountryCode] = useState("+91");
   const [fpPhoneInput, setFpPhoneInput] = useState("");
   const [fpRequiresPhone, setFpRequiresPhone] = useState(false);
   const [fpOtpCode, setFpOtpCode] = useState("");
@@ -54,12 +55,17 @@ export default function LoginPage() {
     try {
       const pubKey = "mock_public_key_" + Math.random().toString(36).substring(2);
 
+      const cleanPhone = registerPhone.trim();
+      const finalPhone = cleanPhone.startsWith("+")
+        ? cleanPhone
+        : `${registerCountryCode}${cleanPhone.replace(/^[0]/, "")}`;
+
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email,
-          phoneNumber: registerPhone,
+          phoneNumber: finalPhone,
           password,
           publicKey: pubKey,
         }),
@@ -91,10 +97,17 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      const cleanId = loginIdentifier.trim();
+      const finalIdentifier = (!cleanId.includes("@") && /^\d{10}$/.test(cleanId))
+        ? `+91${cleanId}`
+        : (!cleanId.includes("@") && /^0\d{10}$/.test(cleanId))
+        ? `+91${cleanId.slice(1)}`
+        : cleanId;
+
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier: loginIdentifier, password }),
+        body: JSON.stringify({ identifier: finalIdentifier, password }),
       });
 
       const data = await res.json();
@@ -134,10 +147,17 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      const cleanId = loginIdentifier.trim();
+      const finalIdentifier = (!cleanId.includes("@") && /^\d{10}$/.test(cleanId))
+        ? `+91${cleanId}`
+        : (!cleanId.includes("@") && /^0\d{10}$/.test(cleanId))
+        ? `+91${cleanId.slice(1)}`
+        : cleanId;
+
       const res = await fetch("/api/auth/login/send-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier: loginIdentifier }),
+        body: JSON.stringify({ identifier: finalIdentifier }),
       });
 
       const data = await res.json();
@@ -236,12 +256,26 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      const cleanFpId = fpIdentifier.trim();
+      const finalFpIdentifier = (!cleanFpId.includes("@") && /^\d{10}$/.test(cleanFpId))
+        ? `+91${cleanFpId}`
+        : (!cleanFpId.includes("@") && /^0\d{10}$/.test(cleanFpId))
+        ? `+91${cleanFpId.slice(1)}`
+        : cleanFpId;
+
+      const cleanFpPhone = fpPhoneInput.trim();
+      const finalFpPhone = cleanFpPhone
+        ? (cleanFpPhone.startsWith("+")
+          ? cleanFpPhone
+          : `${fpCountryCode}${cleanFpPhone.replace(/^[0]/, "")}`)
+        : undefined;
+
       const res = await fetch("/api/auth/forgot-password/send-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          identifier: fpIdentifier,
-          phone: fpPhoneInput || undefined,
+          identifier: finalFpIdentifier,
+          phone: finalFpPhone,
         }),
       });
 
@@ -697,18 +731,34 @@ export default function LoginPage() {
 
               <div>
                 <label className="block text-xs font-medium text-text-secondary mb-2">Mobile Phone Number (SMS)</label>
-                <div className="relative">
-                  <Smartphone className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                <div className="flex rounded-xl bg-cyber-dark border border-border-primary focus-within:border-primary-indigo/50 overflow-hidden transition-all">
+                  <select
+                    value={registerCountryCode}
+                    onChange={(e) => setRegisterCountryCode(e.target.value)}
+                    className="bg-cyber-dark/80 border-r border-border-primary px-3 py-3 text-xs font-mono font-bold text-text-primary rounded-l-xl focus:outline-none cursor-pointer"
+                    aria-label="Country Code"
+                  >
+                    <option value="+91">🇮🇳 +91 (IN)</option>
+                    <option value="+1">🇺🇸 +1 (US)</option>
+                    <option value="+44">🇬🇧 +44 (UK)</option>
+                    <option value="+971">🇦🇪 +971 (UAE)</option>
+                    <option value="+65">🇸🇬 +65 (SG)</option>
+                    <option value="+61">🇦🇺 +61 (AU)</option>
+                    <option value="+49">🇩🇪 +49 (DE)</option>
+                    <option value="+33">🇫🇷 +33 (FR)</option>
+                    <option value="+81">🇯🇵 +81 (JP)</option>
+                    <option value="+966">🇸🇦 +966 (SA)</option>
+                  </select>
                   <input
                     type="tel"
                     value={registerPhone}
                     onChange={(e) => setRegisterPhone(e.target.value)}
                     required
-                    placeholder="+919876543210"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-border-primary focus:border-primary-indigo/50 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                    placeholder="9876543210"
+                    className="w-full px-4 py-3 bg-transparent focus:outline-none text-sm text-text-primary font-mono"
                   />
                 </div>
-                <p className="text-[10px] text-text-secondary font-mono mt-1">Used for TextBee SMS OTP login and secure password recovery.</p>
+                <p className="text-[10px] text-text-secondary font-mono mt-1">Default country code: +91 (India). Used for TextBee SMS OTP login and password recovery.</p>
               </div>
 
               <div>
@@ -839,21 +889,37 @@ export default function LoginPage() {
                   {fpRequiresPhone && (
                     <div>
                       <label className="block text-xs font-medium text-text-secondary mb-2">
-                        Mobile Phone Number (E.164)
+                        Mobile Phone Number (SMS)
                       </label>
-                      <div className="relative">
-                        <Smartphone className="absolute left-3 top-3 w-4.5 h-4.5 text-text-secondary" />
+                      <div className="flex rounded-xl bg-cyber-dark border border-indigo-500/40 focus-within:border-primary-indigo/70 overflow-hidden transition-all">
+                        <select
+                          value={fpCountryCode}
+                          onChange={(e) => setFpCountryCode(e.target.value)}
+                          className="bg-cyber-dark/80 border-r border-border-primary px-3 py-3 text-xs font-mono font-bold text-text-primary rounded-l-xl focus:outline-none cursor-pointer"
+                          aria-label="Country Code"
+                        >
+                          <option value="+91">🇮🇳 +91 (IN)</option>
+                          <option value="+1">🇺🇸 +1 (US)</option>
+                          <option value="+44">🇬🇧 +44 (UK)</option>
+                          <option value="+971">🇦🇪 +971 (UAE)</option>
+                          <option value="+65">🇸🇬 +65 (SG)</option>
+                          <option value="+61">🇦🇺 +61 (AU)</option>
+                          <option value="+49">🇩🇪 +49 (DE)</option>
+                          <option value="+33">🇫🇷 +33 (FR)</option>
+                          <option value="+81">🇯🇵 +81 (JP)</option>
+                          <option value="+966">🇸🇦 +966 (SA)</option>
+                        </select>
                         <input
                           type="tel"
                           value={fpPhoneInput}
                           onChange={(e) => setFpPhoneInput(e.target.value)}
                           required
-                          placeholder="+919876543210"
-                          className="w-full pl-10 pr-4 py-3 rounded-xl bg-cyber-dark border border-indigo-500/40 focus:border-primary-indigo/70 focus:outline-none text-sm text-text-primary transition-all font-mono"
+                          placeholder="9876543210"
+                          className="w-full px-4 py-3 bg-transparent focus:outline-none text-sm text-text-primary font-mono"
                         />
                       </div>
                       <p className="text-[10px] font-mono text-text-secondary mt-1">
-                        Link your phone number to receive the TextBee SMS verification code.
+                        Default: +91 (India). Enter your phone number to receive the TextBee SMS verification code.
                       </p>
                     </div>
                   )}

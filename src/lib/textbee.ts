@@ -9,9 +9,12 @@ const OTP_SECRET = process.env.OTP_SECRET || process.env.JWT_SECRET || "securedo
 export function formatPhoneNumber(phone: string): string {
   let cleaned = phone.replace(/[^\d+]/g, "").trim();
   if (!cleaned.startsWith("+")) {
-    // If 10 digits without country code, default to international prefix or prepend '+'
-    if (cleaned.length === 10) {
-      cleaned = "+91" + cleaned; // default India/standard prefix
+    // If 11 digits starting with 0 (e.g. 09876543210), strip 0 and default to +91
+    if (cleaned.length === 11 && cleaned.startsWith("0")) {
+      cleaned = "+91" + cleaned.slice(1);
+    } else if (cleaned.length === 10) {
+      // 10 digits default to India +91 prefix
+      cleaned = "+91" + cleaned;
     } else {
       cleaned = "+" + cleaned;
     }
