@@ -189,7 +189,27 @@ export async function sendOTPEmail(
     process.env.ALLOW_SIMULATED_OTP !== "false" ||
     process.env.NODE_ENV !== "production";
 
-  // 1. PRIMARY CLOUD DISPATCH: Resend HTTP API (Port 443 HTTPS - Works universally on Render Free Tier!)
+  // 1. PRIMARY DISPATCH: Nodemailer (Gmail SMTP / Custom SMTP)
+  const transporter = createEmailTransporter();
+  if (transporter) {
+    try {
+      const info = await transporter.sendMail({
+        from: fromAddress,
+        to: recipientEmail,
+        subject: `[SecureDocX] Your One-Time Download Passcode: ${otpCode}`,
+        text: `Your SecureDocX download verification code is: ${otpCode}. It expires in 5 minutes.`,
+        html: htmlContent,
+      });
+      console.log("[EmailOTP] Nodemailer dispatched successfully:", info.messageId);
+      return { success: true, simulated: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[EmailOTP] Nodemailer SMTP Delivery error / timeout:", msg);
+      // Fall through to HTTP APIs if SMTP fails or is blocked on cloud host
+    }
+  }
+
+  // 2. SECONDARY CLOUD DISPATCH: Resend HTTP API (Port 443 HTTPS - Works universally on Render Free Tier!)
   const resendApiKey = process.env.RESEND_API_KEY?.trim();
   if (resendApiKey && isConfigured(resendApiKey)) {
     try {
@@ -231,7 +251,7 @@ export async function sendOTPEmail(
     }
   }
 
-  // 2. SECONDARY CLOUD DISPATCH: Brevo HTTP API (Port 443 HTTPS)
+  // 3. SECONDARY CLOUD DISPATCH: Brevo HTTP API (Port 443 HTTPS)
   const brevoApiKey = process.env.BREVO_API_KEY?.trim();
   if (brevoApiKey && isConfigured(brevoApiKey)) {
     try {
@@ -270,36 +290,6 @@ export async function sendOTPEmail(
     }
   }
 
-  // 3. SMTP DISPATCH (Gmail / Custom SMTP)
-  const transporter = createEmailTransporter();
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: fromAddress,
-        to: recipientEmail,
-        subject: `[SecureDocX] Your One-Time Download Passcode: ${otpCode}`,
-        text: `Your SecureDocX download verification code is: ${otpCode}. It expires in 5 minutes.`,
-        html: htmlContent,
-      });
-      return { success: true, simulated: false };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[EmailOTP] SMTP Delivery error / timeout:", msg);
-
-      // Cloud platforms like Render Free Tier block outbound SMTP ports (25, 465, 587).
-      // Automatically fall back to Simulated Mode with test code so testing is NEVER blocked!
-      if (allowSimulation) {
-        console.warn(`[EmailOTP] SMTP blocked or timed out (${msg}). Gracefully falling back to simulated delivery.`);
-        return { success: true, simulated: true, error: msg };
-      }
-
-      return {
-        success: false,
-        simulated: false,
-        error: `${msg}. (Note: Render Free Tier blocks outbound SMTP ports 25/465/587. Add RESEND_API_KEY or set ALLOW_SIMULATED_OTP=true in Render Environment)`,
-      };
-    }
-  }
 
   // 4. DEVELOPMENT & TESTING FALLBACK: Safe simulated delivery
   console.log(`\n======================================================`);

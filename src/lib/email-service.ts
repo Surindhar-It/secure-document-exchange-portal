@@ -117,7 +117,31 @@ async function dispatchSingleEmail({
     process.env.ALLOW_SIMULATED_OTP !== "false" ||
     process.env.NODE_ENV !== "production";
 
-  // Tier 1: Resend HTTP API (Port 443 HTTPS - Works on Render Free Tier)
+  // Tier 1: PRIMARY DISPATCH - Nodemailer (Gmail SMTP / Custom SMTP)
+  const transporter = createEmailTransporter();
+  if (transporter) {
+    const fromAddress =
+      process.env.SMTP_FROM ||
+      `"SecureDocX Portal" <${process.env.SMTP_USER || "no-reply@securedocx.portal"}>`;
+
+    try {
+      const info = await transporter.sendMail({
+        from: fromAddress,
+        to,
+        subject,
+        text,
+        html,
+      });
+      console.log("[EmailService] Nodemailer dispatched successfully:", info.messageId);
+      return { success: true, simulated: false };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[EmailService] Nodemailer SMTP send error:", msg);
+      // Fall through to cloud HTTP APIs if SMTP fails or is blocked
+    }
+  }
+
+  // Tier 2: Cloud Fallback - Resend HTTP API (Port 443 HTTPS)
   const resendApiKey = process.env.RESEND_API_KEY?.trim();
   if (resendApiKey && isConfigured(resendApiKey)) {
     try {
@@ -158,7 +182,7 @@ async function dispatchSingleEmail({
     }
   }
 
-  // Tier 2: Brevo HTTP API (Port 443 HTTPS)
+  // Tier 3: Cloud Fallback - Brevo HTTP API (Port 443 HTTPS)
   const brevoApiKey = process.env.BREVO_API_KEY?.trim();
   if (brevoApiKey && isConfigured(brevoApiKey)) {
     try {
@@ -199,31 +223,6 @@ async function dispatchSingleEmail({
     }
   }
 
-  // Tier 3: Nodemailer (Gmail SMTP or Custom SMTP)
-  const transporter = createEmailTransporter();
-  if (transporter) {
-    const fromAddress =
-      process.env.SMTP_FROM ||
-      `"SecureDocX Portal" <${process.env.SMTP_USER || "no-reply@securedocx.portal"}>`;
-
-    try {
-      await transporter.sendMail({
-        from: fromAddress,
-        to,
-        subject,
-        text,
-        html,
-      });
-      return { success: true, simulated: false };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn("[EmailService] SMTP send error:", msg);
-      if (allowSimulation) {
-        return { success: true, simulated: true, error: msg };
-      }
-      return { success: false, simulated: false, error: msg };
-    }
-  }
 
   // Tier 4: Simulated Delivery
   console.log(`\n======================================================`);
