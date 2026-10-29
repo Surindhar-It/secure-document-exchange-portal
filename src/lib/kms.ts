@@ -160,3 +160,54 @@ export function decryptSecret(packageJson: string): string {
   }
 }
 
+/**
+ * Converts an EncryptedKeyPackage JSON to a compact hexadecimal cipher token
+ * e.g. iv (24 hex) + authTag (32 hex) + ciphertext (hex)
+ */
+export function toCipherToken(packageJson: string): string {
+  if (!packageJson) return "";
+  try {
+    const pkg: EncryptedKeyPackage = JSON.parse(packageJson);
+    return `${pkg.iv}${pkg.authTag}${pkg.ciphertext}`;
+  } catch {
+    return Buffer.from(packageJson, "utf-8").toString("hex");
+  }
+}
+
+/**
+ * Decrypts either a JSON package string or a compact hex cipher token
+ */
+export function decryptSecretToken(tokenOrJson: string): string {
+  if (!tokenOrJson) return "";
+  const trimmed = tokenOrJson.trim();
+
+  // If direct JSON
+  if (trimmed.startsWith("{")) {
+    return decryptSecret(trimmed);
+  }
+
+  // If compact hex: iv(24) + authTag(32) + ciphertext
+  if (/^[0-9a-fA-F]{56,}$/.test(trimmed)) {
+    try {
+      const iv = trimmed.substring(0, 24);
+      const authTag = trimmed.substring(24, 56);
+      const ciphertext = trimmed.substring(56);
+      const pkg: EncryptedKeyPackage = {
+        version: "1.0",
+        algorithm: "AES-256-GCM",
+        iv,
+        authTag,
+        ciphertext,
+      };
+      return decryptSecret(JSON.stringify(pkg));
+    } catch {
+      try {
+        const decoded = Buffer.from(trimmed, "hex").toString("utf-8");
+        return decryptSecret(decoded);
+      } catch {}
+    }
+  }
+
+  return decryptSecret(trimmed);
+}
+

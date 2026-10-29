@@ -6,7 +6,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import fs from "fs";
 import { resolveClientIp } from "@/lib/security";
-import { encryptSecret } from "@/lib/kms";
+import { encryptSecret, toCipherToken } from "@/lib/kms";
 import { sendShareNotificationEmail, EmailDeliveryMode } from "@/lib/email-service";
 
 export async function POST(req: NextRequest) {
@@ -238,21 +238,27 @@ export async function POST(req: NextRequest) {
 
     // Optional automated email notification delivery to recipient
     let emailDispatchResult = null;
+    const cipherToken = encryptedPassword ? toCipherToken(encryptedPassword) : null;
+
     if (sendEmailNotification && sanitizedRecipientEmail) {
       const reqHeaders = req.headers;
       const host = reqHeaders.get("x-forwarded-host") || reqHeaders.get("host") || "localhost:3000";
       const proto = reqHeaders.get("x-forwarded-proto") || "http";
       const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
-      const shareUrl = `${baseUrl.replace(/\/$/, "")}/d/${shareLink.id}`;
+      const cleanBaseUrl = baseUrl.replace(/\/$/, "");
+      const shareUrl = `${cleanBaseUrl}/d/${shareLink.id}`;
+      const recoveryUrl = `${cleanBaseUrl}/recovery?id=${shareLink.id}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`;
 
       emailDispatchResult = await sendShareNotificationEmail({
         recipientEmail: sanitizedRecipientEmail,
         senderEmail: sessionUser.email,
         shareUrl,
+        recoveryUrl,
         shareLinkId: shareLink.id,
         fileNames: orderedFiles.map((f) => f.fileName),
         fileCount: orderedFiles.length,
         password: password || null,
+        encryptedPasswordToken: cipherToken,
         authMethod,
         transferMode: shareLink.transferMode as "STANDARD" | "BLOCKCHAIN",
         expiresAt: shareLink.expiresAt,

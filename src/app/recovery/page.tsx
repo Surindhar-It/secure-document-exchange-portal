@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   Shield, Key, Download, Lock, CheckCircle2, AlertTriangle, AlertOctagon,
   Image as ImageIcon, RefreshCw, Eye, ExternalLink, ArrowRight, FileCheck,
-  Check, XCircle, Globe, Fingerprint, Layers, ShieldCheck
+  Check, XCircle, Globe, Fingerprint, Layers, ShieldCheck, Unlock
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { decryptFileBuffer, computeSHA256Buffer } from "@/lib/crypto";
@@ -42,6 +42,11 @@ export default function DocumentRecoveryPage() {
   // Policy authentication inputs
   const [claimedEmail, setClaimedEmail] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
+  const [cipherTokenInput, setCipherTokenInput] = useState("");
+  const [decryptingCipher, setDecryptingCipher] = useState(false);
+  const [cipherDecryptError, setCipherDecryptError] = useState("");
+  const [cipherDecryptSuccess, setCipherDecryptSuccess] = useState(false);
+
   const [otpInput, setOtpInput] = useState("");
   const [otpSessionToken, setOtpSessionToken] = useState<string | null>(null);
   const [isOtpVerified, setIsOtpVerified] = useState(false);
@@ -65,30 +70,54 @@ export default function DocumentRecoveryPage() {
   const [expectedOriginalHash, setExpectedOriginalHash] = useState<string | null>(null);
   const [plaintextTampered, setPlaintextTampered] = useState<boolean | null>(null);
 
-  // Parse link / URL input
-  const handleParseLink = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setMetaError("");
-    setLinkMeta(null);
-    setRecoveryStatus("IDLE");
-    setStatusMessage("");
+  // Encrypted Password Decryptor handler
+  const handleDecryptPassword = async (targetId?: string, overrideCipher?: string) => {
+    const idToUse = (targetId || linkId || linkInput.trim()).trim();
+    const tokenToUse = (overrideCipher || cipherTokenInput).trim();
 
-    let extractedId = linkInput.trim();
-    let extractedKey = hexKeyInput.trim();
+    if (!idToUse) {
+      setCipherDecryptError("Please look up or enter a Share Link ID first.");
+      return;
+    }
+    if (!tokenToUse) {
+      setCipherDecryptError("Please enter the encrypted password cipher token from your email.");
+      return;
+    }
 
-    // Check if input is a full URL with hash
+    setDecryptingCipher(true);
+    setCipherDecryptError("");
+    setCipherDecryptSuccess(false);
+
     try {
-      if (extractedId.includes("/d/")) {
-        const urlObj = new URL(extractedId, window.location.origin);
-        const parts = urlObj.pathname.split("/d/");
-        if (parts[1]) extractedId = parts[1];
-        if (urlObj.hash && urlObj.hash.length > 1) {
-          extractedKey = urlObj.hash.substring(1);
-          setHexKeyInput(extractedKey);
-        }
-      }
-    } catch {}
+      const res = await fetch("/api/share/decrypt-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shareLinkId: idToUse,
+          cipherToken: tokenToUse,
+        }),
+      });
 
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to decrypt password token");
+      }
+
+      if (data.decryptedPassword) {
+        setPasswordInput(data.decryptedPassword);
+        setCipherDecryptSuccess(true);
+        setStatusMessage("Encrypted password token decrypted and applied to Link Password.");
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setCipherDecryptError(msg);
+    } finally {
+      setDecryptingCipher(false);
+    }
+  };
+
+  // Reusable lookup logic for link metadata
+  const lookupLink = async (extractedId: string, cipherForAutoDecrypt?: string) => {
     if (!extractedId) {
       setMetaError("Please provide a valid Share Link ID or URL.");
       return;
@@ -98,6 +127,7 @@ export default function DocumentRecoveryPage() {
     setMetaLoading(true);
     setOtpSessionToken(null);
     setIsOtpVerified(false);
+    setMetaError("");
 
     try {
       const res = await fetch(`/api/share/download?id=${encodeURIComponent(extractedId)}&geo=${geoCountry}`);
@@ -127,6 +157,10 @@ export default function DocumentRecoveryPage() {
             ? `Transfer located: Multi-file bundle containing ${filesList.length} secure documents (max 20). Complete policy authentication to recover.`
             : "Transfer located. Complete policy authentication to authorize document recovery."
         );
+
+        if (cipherForAutoDecrypt) {
+          handleDecryptPassword(extractedId, cipherForAutoDecrypt);
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -135,6 +169,50 @@ export default function DocumentRecoveryPage() {
     } finally {
       setMetaLoading(false);
     }
+  };
+
+  // Parse URL search parameters on component mount (?id=...&cipher=...)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const paramId = searchParams.get("id") || searchParams.get("linkId");
+    const paramCipher = searchParams.get("cipher") || searchParams.get("token");
+
+    if (paramCipher) {
+      setCipherTokenInput(paramCipher);
+    }
+
+    if (paramId) {
+      setLinkInput(paramId);
+      lookupLink(paramId, paramCipher || undefined);
+    }
+  }, []);
+
+  // Parse link / URL input from form submission
+  const handleParseLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMetaError("");
+    setLinkMeta(null);
+    setRecoveryStatus("IDLE");
+    setStatusMessage("");
+
+    let extractedId = linkInput.trim();
+    let extractedKey = hexKeyInput.trim();
+
+    // Check if input is a full URL with hash
+    try {
+      if (extractedId.includes("/d/")) {
+        const urlObj = new URL(extractedId, window.location.origin);
+        const parts = urlObj.pathname.split("/d/");
+        if (parts[1]) extractedId = parts[1];
+        if (urlObj.hash && urlObj.hash.length > 1) {
+          extractedKey = urlObj.hash.substring(1);
+          setHexKeyInput(extractedKey);
+        }
+      }
+    } catch {}
+
+    lookupLink(extractedId, cipherTokenInput.trim() || undefined);
   };
 
   // Steganography payload extraction
@@ -493,15 +571,73 @@ export default function DocumentRecoveryPage() {
               )}
 
               {(linkMeta?.passwordRequired || linkMeta?.authMethod === "PASSWORD" || linkMeta?.authMethod === "BOTH") && (
-                <div>
-                  <label className="text-xs font-mono text-text-secondary block mb-1">Link Password</label>
-                  <input
-                    type="password"
-                    value={passwordInput}
-                    onChange={(e) => setPasswordInput(e.target.value)}
-                    placeholder="Enter security password"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:outline-none focus:border-indigo-500"
-                  />
+                <div className="space-y-3">
+                  {/* Encrypted Password Decryptor Card */}
+                  <div className="p-4 rounded-xl bg-indigo-950/30 border border-indigo-500/25 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                        <span className="text-xs font-mono font-bold text-text-primary">
+                          Email Password Cipher Decryptor
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                        Zero-Knowledge KMS
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-text-secondary font-mono leading-relaxed">
+                      If you received an encrypted 64+ bit/hex password token in your email, paste it below to decrypt it into your download password.
+                    </p>
+
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={cipherTokenInput}
+                        onChange={(e) => setCipherTokenInput(e.target.value)}
+                        placeholder="Paste encrypted cipher token from email..."
+                        className="flex-grow px-3 py-2 rounded-lg bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleDecryptPassword()}
+                        disabled={decryptingCipher || !cipherTokenInput.trim()}
+                        className="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-mono font-semibold transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        {decryptingCipher ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Unlock className="w-3.5 h-3.5" />
+                        )}
+                        Decrypt
+                      </button>
+                    </div>
+
+                    {cipherDecryptError && (
+                      <div className="text-[11px] font-mono text-rose-400 flex items-center gap-1.5 bg-rose-500/10 p-2 rounded-lg border border-rose-500/20">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{cipherDecryptError}</span>
+                      </div>
+                    )}
+
+                    {cipherDecryptSuccess && (
+                      <div className="text-[11px] font-mono text-emerald-400 flex items-center gap-1.5 bg-emerald-500/10 p-2 rounded-lg border border-emerald-500/20">
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Cipher decrypted! Download password populated below.</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-mono text-text-secondary block mb-1">Link Password</label>
+                    <input
+                      type="password"
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      placeholder="Enter security password or decrypt using cipher above"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-cyber-dark border border-border-primary text-xs font-mono text-text-primary focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
                 </div>
               )}
 

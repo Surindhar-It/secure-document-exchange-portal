@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { recordAuditEvent } from "./audit";
+import { encryptSecret, toCipherToken } from "./kms";
 
 export type EmailDeliveryMode = "COMBINED" | "SEPARATE" | "LINK_ONLY";
 
@@ -7,11 +8,13 @@ export interface ShareNotificationOptions {
   recipientEmail: string;
   senderEmail?: string;
   shareUrl: string;
+  recoveryUrl?: string;
   shareLinkId: string;
   fileNames: string[];
   fileCount: number;
   totalSizeFormatted?: string;
   password?: string | null;
+  encryptedPasswordToken?: string | null;
   authMethod: string;
   transferMode: "STANDARD" | "BLOCKCHAIN";
   expiresAt?: Date | string | null;
@@ -261,10 +264,11 @@ async function dispatchSingleEmail({
 }
 
 /**
- * Builds the HTML template for Link / Transfer Notification
+ * Builds the HTML template for Link / Transfer Notification with Encrypted Password Token
  */
 function buildLinkEmailHtml({
   shareUrl,
+  recoveryUrl,
   shareLinkId,
   senderEmail,
   fileNames,
@@ -274,10 +278,10 @@ function buildLinkEmailHtml({
   maxDownloads,
   authMethod,
   hasPassword,
-  isSeparate,
-  combinedPassword,
+  encryptedPasswordToken,
 }: {
   shareUrl: string;
+  recoveryUrl?: string;
   shareLinkId: string;
   senderEmail?: string;
   fileNames: string[];
@@ -287,8 +291,7 @@ function buildLinkEmailHtml({
   maxDownloads?: number | null;
   authMethod: string;
   hasPassword: boolean;
-  isSeparate: boolean;
-  combinedPassword?: string | null;
+  encryptedPasswordToken?: string | null;
 }): string {
   const fileListHtml = fileNames
     .slice(0, 5)
@@ -305,28 +308,29 @@ function buildLinkEmailHtml({
     : "No expiration set (Never expires)";
 
   let passwordBanner = "";
-  if (hasPassword) {
-    if (isSeparate) {
-      passwordBanner = `
-        <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; padding: 16px; margin: 20px 0;">
-          <div style="font-weight: 700; color: #fbbf24; font-size: 13px; margin-bottom: 4px;">🔐 Password Protection Active (Sent Separately)</div>
-          <div style="font-size: 12px; color: #d1d5db; line-height: 1.5;">
-            For enhanced security, the download password for this transfer is being sent to your email address in a <strong>separate message</strong>.
-          </div>
+  if (hasPassword && encryptedPasswordToken) {
+    passwordBanner = `
+      <div style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 18px; margin: 20px 0;">
+        <div style="font-weight: 700; color: #a5b4fc; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">
+          🔐 Encrypted Password Token (Zero-Knowledge AES-256-GCM)
         </div>
-      `;
-    } else if (combinedPassword) {
-      passwordBanner = `
-        <div style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 12px; padding: 16px; margin: 20px 0; text-align: center;">
-          <div style="font-weight: 700; color: #a5b4fc; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Download Password</div>
-          <div style="font-family: 'Courier New', Courier, monospace; font-size: 22px; font-weight: 800; letter-spacing: 4px; color: #ffffff; background: #0b0f19; padding: 10px 16px; border-radius: 8px; display: inline-block; border: 1px solid #374151;">
-            ${combinedPassword}
-          </div>
-          <div style="font-size: 11px; color: #9ca3af; margin-top: 8px;">Keep this password confidential. Do not forward this email.</div>
+        <p style="font-size: 12px; color: #9ca3af; margin: 0 0 10px 0; line-height: 1.5;">
+          For security, your download password was encrypted before transmission. You can decrypt it securely in the Recovery Portal:
+        </p>
+        <div style="font-family: 'Courier New', Courier, monospace; font-size: 13px; font-weight: 700; letter-spacing: 1px; color: #34d399; background: #0b0f19; padding: 12px 14px; border-radius: 8px; word-break: break-all; border: 1px solid #374151; user-select: all;">
+          ${encryptedPasswordToken}
         </div>
-      `;
-    }
+        <div style="font-size: 11px; color: #818cf8; margin-top: 8px;">
+          💡 Tip: The button below will automatically load and decrypt this token for you in the Recovery Portal.
+        </div>
+      </div>
+    `;
   }
+
+  const primaryTargetUrl = recoveryUrl || shareUrl;
+  const primaryButtonLabel = hasPassword && recoveryUrl
+    ? "🔓 Decrypt Password & Access Files &rarr;"
+    : "Access Secure Files &rarr;";
 
   return `
     <!DOCTYPE html>
@@ -369,8 +373,8 @@ function buildLinkEmailHtml({
           ${passwordBanner}
 
           <div style="text-align: center; margin: 28px 0;">
-            <a href="${shareUrl}" style="display: inline-block; background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); color: #ffffff; text-decoration: none; font-weight: 700; font-size: 15px; padding: 14px 32px; border-radius: 10px; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);">
-              Access Secure Files &rarr;
+            <a href="${primaryTargetUrl}" style="display: inline-block; background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); color: #ffffff; text-decoration: none; font-weight: 700; font-size: 15px; padding: 14px 32px; border-radius: 10px; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);">
+              ${primaryButtonLabel}
             </a>
           </div>
 
@@ -382,6 +386,7 @@ function buildLinkEmailHtml({
           </div>
 
           <div style="border-top: 1px solid #1f2937; padding-top: 20px; margin-top: 24px; font-size: 11px; color: #6b7280; font-family: monospace; line-height: 1.5;">
+            ${recoveryUrl ? `Recovery & Decrypt Portal: <a href="${recoveryUrl}" style="color: #34d399; word-break: break-all;">${recoveryUrl}</a><br><br>` : ""}
             Direct URL: <a href="${shareUrl}" style="color: #818cf8; word-break: break-all;">${shareUrl}</a><br><br>
             Security Standard: AES-256-GCM Envelope Encryption &bull; SHA-256 Tamper-Proof Audit
           </div>
@@ -496,149 +501,96 @@ export async function sendShareNotificationEmail(
     };
   }
 
-  const hasPassword = !!(password && password.trim().length > 0);
-  const actualDeliveryMode: EmailDeliveryMode =
-    !hasPassword ? "LINK_ONLY" : deliveryMode;
+  // Compute encrypted password token if not directly provided
+  let cipherToken = opts.encryptedPasswordToken || null;
+  if (!cipherToken && password && password.trim().length > 0) {
+    try {
+      cipherToken = toCipherToken(encryptSecret(password.trim()));
+    } catch (e) {
+      console.error("[EmailService] Failed to derive cipher token from password:", e);
+    }
+  }
+
+  // Build the Recovery Portal URL with pre-populated id and cipher token
+  const effectiveRecoveryUrl =
+    opts.recoveryUrl ||
+    (shareUrl.includes("/d/")
+      ? `${shareUrl.split("/d/")[0]}/recovery?id=${shareLinkId}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`
+      : undefined);
+
+  const hasPassword = !!(cipherToken || (password && password.trim().length > 0));
 
   try {
-    if (actualDeliveryMode === "SEPARATE") {
-      // 1. Send Link Notification (mentions password follows in separate email)
-      const linkHtml = buildLinkEmailHtml({
-        shareUrl,
-        shareLinkId,
-        senderEmail,
-        fileNames,
-        fileCount,
-        transferMode,
-        expiresAt,
-        maxDownloads,
-        authMethod,
-        hasPassword: true,
-        isSeparate: true,
-      });
+    // Consolidated Single Email Delivery - Exactly 1 email sent per transfer
+    const linkHtml = buildLinkEmailHtml({
+      shareUrl,
+      recoveryUrl: effectiveRecoveryUrl,
+      shareLinkId,
+      senderEmail,
+      fileNames,
+      fileCount,
+      transferMode,
+      expiresAt,
+      maxDownloads,
+      authMethod,
+      hasPassword,
+      encryptedPasswordToken: cipherToken,
+    });
 
-      const linkResult = await dispatchSingleEmail({
-        to: recipientEmail,
-        subject: `[SecureDocX] Secure File Bundle Shared With You (${fileCount} file${fileCount > 1 ? "s" : ""})`,
-        html: linkHtml,
-        text: `SecureDocX: ${fileCount} file(s) shared with you. Access link: ${shareUrl}. Password is being sent in a separate email.`,
-      });
+    const subject = hasPassword
+      ? `[SecureDocX] Secure File Bundle & Encrypted Password (${fileCount} file${fileCount > 1 ? "s" : ""})`
+      : `[SecureDocX] Secure File Bundle Shared With You (${fileCount} file${fileCount > 1 ? "s" : ""})`;
 
-      if (!linkResult.success && !linkResult.simulated) {
-        return {
-          success: false,
-          deliveryMode: "SEPARATE",
-          messagesSent: 0,
-          simulated: false,
-          error: linkResult.error || "Failed to send download link email",
-        };
-      }
+    const textContent = `SecureDocX: ${fileCount} file(s) securely shared with you.\n\n` +
+      `Access in Recovery Portal: ${effectiveRecoveryUrl || shareUrl}\n` +
+      (cipherToken ? `\nEncrypted Password Token: ${cipherToken}\nDecrypt and download in Recovery Portal: ${effectiveRecoveryUrl || shareUrl}\n` : "") +
+      `\nDirect Download Link: ${shareUrl}\nTransfer ID: ${shareLinkId}`;
 
-      // 2. Send Password Notification (Separate email)
-      const passwordHtml = buildPasswordEmailHtml({
-        password: password!,
-        shareLinkId,
-        senderEmail,
-        expiresAt,
-      });
+    const result = await dispatchSingleEmail({
+      to: recipientEmail,
+      subject,
+      html: linkHtml,
+      text: textContent,
+    });
 
-      const passResult = await dispatchSingleEmail({
-        to: recipientEmail,
-        subject: `[SecureDocX] Access Password for Transfer [${shareLinkId}]`,
-        html: passwordHtml,
-        text: `Your download access password for SecureDocX transfer [${shareLinkId}] is: ${password}`,
-      });
-
-      const simulated = linkResult.simulated || passResult.simulated;
-
-      // Audit log the email dispatch
-      await recordAuditEvent({
-        action: "SHARE_EMAIL_DISPATCHED",
-        ipAddress: clientIp || "127.0.0.1",
-        shareLinkId,
-        userEmail: recipientEmail,
-        transferMode,
-        details: {
-          shareLinkId,
-          recipientEmail,
-          deliveryMode: "SEPARATE",
-          messagesSent: 2,
-          simulated,
-        },
-      });
-
+    if (!result.success && !result.simulated) {
       return {
-        success: true,
-        deliveryMode: "SEPARATE",
-        messagesSent: 2,
-        simulated,
-      };
-    } else {
-      // COMBINED or LINK_ONLY: Send single email
-      const combinedHtml = buildLinkEmailHtml({
-        shareUrl,
-        shareLinkId,
-        senderEmail,
-        fileNames,
-        fileCount,
-        transferMode,
-        expiresAt,
-        maxDownloads,
-        authMethod,
-        hasPassword,
-        isSeparate: false,
-        combinedPassword: password,
-      });
-
-      const subject = hasPassword
-        ? `[SecureDocX] Secure File Bundle & Password Enclosed (${fileCount} file${fileCount > 1 ? "s" : ""})`
-        : `[SecureDocX] Secure File Bundle Shared With You (${fileCount} file${fileCount > 1 ? "s" : ""})`;
-
-      const result = await dispatchSingleEmail({
-        to: recipientEmail,
-        subject,
-        html: combinedHtml,
-        text: `SecureDocX: ${fileCount} file(s) shared with you. Access link: ${shareUrl}${password ? ` | Password: ${password}` : ""}`,
-      });
-
-      if (!result.success && !result.simulated) {
-        return {
-          success: false,
-          deliveryMode: actualDeliveryMode,
-          messagesSent: 0,
-          simulated: false,
-          error: result.error || "Failed to dispatch email",
-        };
-      }
-
-      await recordAuditEvent({
-        action: "SHARE_EMAIL_DISPATCHED",
-        ipAddress: clientIp || "127.0.0.1",
-        shareLinkId,
-        userEmail: recipientEmail,
-        transferMode,
-        details: {
-          shareLinkId,
-          recipientEmail,
-          deliveryMode: actualDeliveryMode,
-          messagesSent: 1,
-          simulated: result.simulated,
-        },
-      });
-
-      return {
-        success: true,
-        deliveryMode: actualDeliveryMode,
-        messagesSent: 1,
-        simulated: result.simulated,
+        success: false,
+        deliveryMode: "COMBINED",
+        messagesSent: 0,
+        simulated: false,
+        error: result.error || "Failed to dispatch email",
       };
     }
+
+    await recordAuditEvent({
+      action: "SHARE_EMAIL_DISPATCHED",
+      ipAddress: clientIp || "127.0.0.1",
+      shareLinkId,
+      userEmail: recipientEmail,
+      transferMode,
+      details: {
+        shareLinkId,
+        recipientEmail,
+        deliveryMode: "COMBINED",
+        messagesSent: 1,
+        simulated: result.simulated,
+        hasCipherToken: !!cipherToken,
+      },
+    });
+
+    return {
+      success: true,
+      deliveryMode: "COMBINED",
+      messagesSent: 1,
+      simulated: result.simulated,
+    };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[EmailService] Unexpected delivery failure:", msg);
     return {
       success: false,
-      deliveryMode: actualDeliveryMode,
+      deliveryMode: "COMBINED",
       messagesSent: 0,
       simulated: false,
       error: msg,

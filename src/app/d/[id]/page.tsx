@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 import {
   Download, Lock, Unlock, HardDrive, AlertTriangle, CheckCircle2,
-  AlertOctagon, Globe, ChevronDown, Search, XCircle, ShieldCheck, Mail
+  AlertOctagon, Globe, ChevronDown, Search, XCircle, ShieldCheck, Mail, Key
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { decryptFileBuffer, computeSHA256Buffer } from "@/lib/crypto";
@@ -946,7 +946,16 @@ export default function DownloadPortalPage() {
             {/* Password input */}
             {(passwordRequired || authMethod === "PASSWORD" || authMethod === "BOTH") && (
               <div className="space-y-2">
-                <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-widest">Access Password Required</label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-[10px] font-mono text-text-secondary uppercase tracking-widest">Access Password Required</label>
+                  <a
+                    href={`/recovery?id=${encodeURIComponent(linkId)}`}
+                    className="text-[10px] font-mono text-indigo-400 hover:text-indigo-300 hover:underline flex items-center gap-1"
+                  >
+                    <Key className="w-3 h-3" />
+                    Decrypt Cipher Token &rarr;
+                  </a>
+                </div>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 w-4 h-4 text-text-secondary" />
                   <input

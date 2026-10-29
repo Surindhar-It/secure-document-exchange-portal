@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { recordAuditEvent } from "@/lib/audit";
 import { resolveClientIp } from "@/lib/security";
-import { decryptSecret } from "@/lib/kms";
+import { decryptSecret, toCipherToken } from "@/lib/kms";
 import { sendShareNotificationEmail, EmailDeliveryMode } from "@/lib/email-service";
 
 export async function POST(req: NextRequest) {
@@ -65,9 +65,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Recover download password safely using KMS backend decryption if present
+    // Derive encrypted password cipher token
+    let cipherToken: string | null = null;
     let decryptedPassword: string | null = null;
     if (shareLink.encryptedPassword) {
+      try {
+        cipherToken = toCipherToken(shareLink.encryptedPassword);
+      } catch (tokErr) {
+        console.error("[ShareNotify] Failed to convert encrypted password to cipher token:", tokErr);
+      }
       try {
         decryptedPassword = decryptSecret(shareLink.encryptedPassword);
       } catch (decErr) {
@@ -78,7 +84,7 @@ export async function POST(req: NextRequest) {
     const effectiveDeliveryMode: EmailDeliveryMode =
       (deliveryMode as EmailDeliveryMode) ||
       (shareLink.emailDeliveryMode as EmailDeliveryMode) ||
-      (decryptedPassword ? "SEPARATE" : "LINK_ONLY");
+      (cipherToken ? "COMBINED" : "LINK_ONLY");
 
     const reqHeaders = req.headers;
     const host =
@@ -87,7 +93,9 @@ export async function POST(req: NextRequest) {
       "localhost:3000";
     const proto = reqHeaders.get("x-forwarded-proto") || "http";
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `${proto}://${host}`;
-    const shareUrl = `${baseUrl.replace(/\/$/, "")}/d/${shareLink.id}`;
+    const cleanBaseUrl = baseUrl.replace(/\/$/, "");
+    const shareUrl = `${cleanBaseUrl}/d/${shareLink.id}`;
+    const recoveryUrl = `${cleanBaseUrl}/recovery?id=${shareLink.id}${cipherToken ? `&cipher=${encodeURIComponent(cipherToken)}` : ""}`;
 
     const fileNames = shareLink.files.map((sf) => sf.file.fileName);
 
@@ -95,10 +103,12 @@ export async function POST(req: NextRequest) {
       recipientEmail: shareLink.recipientEmail,
       senderEmail: sessionUser.email,
       shareUrl,
+      recoveryUrl,
       shareLinkId: shareLink.id,
       fileNames,
       fileCount: shareLink.files.length,
       password: decryptedPassword,
+      encryptedPasswordToken: cipherToken,
       authMethod: shareLink.authMethod,
       transferMode: shareLink.transferMode as "STANDARD" | "BLOCKCHAIN",
       expiresAt: shareLink.expiresAt,
