@@ -210,7 +210,7 @@ async function dispatchSingleEmail({
         body: JSON.stringify({
           sender: {
             name: "SecureDocX Portal",
-            email: process.env.SMTP_USER || "no-reply@securedocx.portal",
+            email: process.env.BREVO_SENDER_EMAIL?.trim() || process.env.SMTP_USER?.trim() || "surindhar9f@gmail.com",
           },
           to: [{ email: to }],
           subject,

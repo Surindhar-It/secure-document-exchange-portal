@@ -269,7 +269,10 @@ export async function sendOTPEmail(
           Accept: "application/json",
         },
         body: JSON.stringify({
-          sender: { name: "SecureDocX Portal", email: process.env.SMTP_USER || "no-reply@securedocx.portal" },
+          sender: {
+            name: "SecureDocX Portal",
+            email: process.env.BREVO_SENDER_EMAIL?.trim() || process.env.SMTP_USER?.trim() || "surindhar9f@gmail.com",
+          },
           to: [{ email: recipientEmail }],
           subject: `[SecureDocX] Your One-Time Download Passcode: ${otpCode}`,
           htmlContent: htmlContent,
@@ -454,7 +457,10 @@ export async function sendPasswordResetEmailOTP(
           Accept: "application/json",
         },
         body: JSON.stringify({
-          sender: { name: "SecureDocX Security", email: process.env.SMTP_USER || "no-reply@securedocx.portal" },
+          sender: {
+            name: "SecureDocX Security",
+            email: process.env.BREVO_SENDER_EMAIL?.trim() || process.env.SMTP_USER?.trim() || "surindhar9f@gmail.com",
+          },
           to: [{ email: recipientEmail }],
           subject: `[SecureDocX] Your Password Reset Code: ${otpCode}`,
           htmlContent: htmlContent,
