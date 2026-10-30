@@ -396,10 +396,11 @@ export default function EmailOtpVerificationCard({
                   disabled={disabled || isLocked || isExpired}
                   onChange={(e) => handleDigitChange(idx, e.target.value)}
                   onKeyDown={(e) => handleKeyDown(idx, e)}
-                  className={`w-11 h-12 text-center text-lg font-bold font-mono rounded-xl bg-cyber-card border transition-all outline-none ${
+                  style={{ color: digit ? "#34d399" : "#ffffff" }}
+                  className={`w-11 h-12 text-center text-xl font-black font-mono rounded-xl bg-[#0f172a] dark:bg-[#090d16] border-2 transition-all outline-none caret-emerald-400 ${
                     digit
-                      ? "border-indigo-500 text-indigo-400 shadow-sm shadow-indigo-500/20"
-                      : "border-border-primary text-text-primary focus:border-indigo-500/70"
+                      ? "border-emerald-500 text-emerald-400 shadow-md shadow-emerald-500/25 ring-1 ring-emerald-500/30"
+                      : "border-border-primary text-white focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/40"
                   } disabled:opacity-50`}
                 />
               ))}

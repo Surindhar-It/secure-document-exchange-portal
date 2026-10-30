@@ -660,7 +660,8 @@ export default function LoginPage() {
                       required
                       autoFocus
                       placeholder="000000"
-                      className="w-44 mx-auto block text-center tracking-[12px] pl-3 py-3 rounded-xl bg-cyber-dark border border-indigo-500/40 focus:border-indigo-400 focus:outline-none text-lg text-primary-indigo font-mono font-bold transition-all"
+                      style={{ color: "#818cf8" }}
+                      className="w-48 mx-auto block text-center tracking-[12px] pl-3 py-3 rounded-xl bg-[#0f172a] dark:bg-[#090d16] border-2 border-indigo-500/50 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/30 focus:outline-none text-xl text-indigo-400 caret-indigo-400 font-mono font-black transition-all shadow-inner"
                     />
                     <div className="text-center text-[10px] text-text-secondary font-mono mt-2">
                       ⏱ Code valid for 5 minutes (300 seconds)
@@ -979,7 +980,8 @@ export default function LoginPage() {
                       onChange={(e) => setFpOtpCode(e.target.value.replace(/\D/g, ""))}
                       required
                       placeholder="000000"
-                      className="w-44 mx-auto block text-center tracking-[12px] pl-3 py-3 rounded-xl bg-cyber-dark border border-indigo-500/40 focus:border-indigo-400 focus:outline-none text-lg text-primary-indigo font-mono font-bold transition-all"
+                      style={{ color: "#818cf8" }}
+                      className="w-48 mx-auto block text-center tracking-[12px] pl-3 py-3 rounded-xl bg-[#0f172a] dark:bg-[#090d16] border-2 border-indigo-500/50 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/30 focus:outline-none text-xl text-indigo-400 caret-indigo-400 font-mono font-black transition-all shadow-inner"
                     />
                   </div>
 

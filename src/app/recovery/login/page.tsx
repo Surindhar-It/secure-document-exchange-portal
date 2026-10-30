@@ -318,16 +318,37 @@ export default function RecoveryLoginPage() {
                       </p>
                     </div>
 
-                    <div>
+                    <div className="space-y-3">
                       <input
                         type="text"
                         maxLength={6}
                         autoFocus
                         value={otpCode}
                         onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
-                        placeholder="••••••"
-                        className="w-full text-center tracking-[10px] font-mono font-bold text-2xl py-3 rounded-xl bg-cyber-dark/80 border border-success-emerald/50 focus:border-success-emerald focus:ring-2 focus:ring-success-emerald/30 text-white outline-none"
+                        placeholder="000000"
+                        style={{ color: "#34d399" }}
+                        className="w-full text-center tracking-[12px] font-mono font-black text-3xl py-3.5 rounded-xl bg-[#0f172a] dark:bg-[#090d16] border-2 border-emerald-500/60 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30 text-emerald-400 caret-emerald-400 placeholder:text-emerald-800/40 outline-none shadow-inner transition-all"
                       />
+
+                      {/* Segmented Digit Display for crystal clear visibility */}
+                      <div className="flex justify-center gap-2">
+                        {[0, 1, 2, 3, 4, 5].map((idx) => {
+                          const char = otpCode[idx];
+                          return (
+                            <div
+                              key={idx}
+                              style={{ color: char ? "#34d399" : undefined }}
+                              className={`w-9 h-10 rounded-lg border-2 flex items-center justify-center font-mono font-black text-lg transition-all ${
+                                char
+                                  ? "border-emerald-500 bg-emerald-500/15 text-emerald-400 shadow-md shadow-emerald-500/20 scale-105"
+                                  : "border-border-primary/80 bg-cyber-dark/60 text-text-secondary/30"
+                              }`}
+                            >
+                              {char || "•"}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     {devCode && (
