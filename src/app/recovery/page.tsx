@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import Link from "next/link";
 import {
   Shield, Key, Download, Lock, CheckCircle2, AlertTriangle, AlertOctagon,
   Image as ImageIcon, RefreshCw, Eye, ExternalLink, ArrowRight, FileCheck,
@@ -462,13 +463,48 @@ export default function DocumentRecoveryPage() {
 
   return (
     <div className="min-h-screen bg-cyber-dark text-text-primary p-6 md:p-12 flex flex-col items-center select-none font-sans">
+      {/* Top Portal Navigation */}
+      <div className="max-w-4xl w-full flex items-center justify-between pb-6 mb-6 border-b border-border-primary/60 text-xs">
+        <div className="flex items-center gap-2">
+          <Link
+            href="/"
+            className="flex items-center gap-1.5 text-text-secondary hover:text-white transition-colors"
+          >
+            <Shield className="w-4 h-4 text-primary-indigo" />
+            <span className="font-bold">FortressShare</span>
+          </Link>
+          <span className="text-border-primary">•</span>
+          <span className="text-emerald-400 font-mono text-[11px] font-semibold uppercase">
+            Recovery Portal
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Link
+            href="/recovery/dashboard"
+            className="px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-semibold transition-all flex items-center gap-1.5 text-xs font-mono"
+          >
+            <FileCheck className="w-3.5 h-3.5" />
+            <span>Recipient Vault</span>
+          </Link>
+
+          <Link
+            href="/sender/login"
+            className="px-3 py-1.5 rounded-lg border border-border-primary hover:border-primary-indigo text-text-secondary hover:text-white transition-all flex items-center gap-1.5 text-xs font-mono"
+          >
+            <Shield className="w-3.5 h-3.5 text-primary-indigo" />
+            <span>Sender Portal</span>
+          </Link>
+        </div>
+      </div>
+
       {/* Header */}
       <div className="max-w-4xl w-full flex flex-col items-center text-center space-y-3 mb-10">
-        <div className="flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-mono">
+        <div className="flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">
           <Shield className="w-3.5 h-3.5" />
-          <span>Secure Document Recovery & Integrity Verification Engine</span>
+          <span>Secure Document Recovery &amp; Integrity Verification Engine</span>
         </div>
-        <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-gradient-to-r from-slate-100 via-indigo-200 to-indigo-400 bg-clip-text text-transparent">
+        <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-gradient-to-r from-slate-100 via-emerald-200 to-cyan-400 bg-clip-text text-transparent">
           Document Recovery Portal
         </h1>
         <p className="text-text-secondary text-sm max-w-xl font-mono">

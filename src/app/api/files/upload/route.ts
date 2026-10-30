@@ -166,7 +166,7 @@ export async function GET(req: NextRequest) {
 
     const user = await db.user.findUnique({
       where: { id: sessionUser.id },
-      select: { id: true, email: true, mfaEnabled: true },
+      select: { id: true, email: true, mfaEnabled: true, role: true },
     });
 
     return NextResponse.json({ files, user });

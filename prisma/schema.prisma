@@ -16,6 +16,7 @@ model User {
   mfaSecret         String?
   mfaEnabled        Boolean            @default(false)
   publicKey         String?            // Base64 public key for user cryptographic operations
+  role              String             @default("SENDER") // "SENDER" | "RECIPIENT" | "ADMIN"
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   passkeys          Passkey[]

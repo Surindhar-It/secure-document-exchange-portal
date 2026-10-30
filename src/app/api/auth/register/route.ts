@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   try {
     const ip = resolveClientIp(req);
     const body = await req.json();
-    const { email, phoneNumber, password, publicKey } = body;
+    const { email, phoneNumber, password, publicKey, role } = body;
 
     if (!email || !phoneNumber || !password) {
       return NextResponse.json(
@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
         phoneNumber: formattedPhone,
         passwordHash,
         publicKey: publicKey || null,
+        role: role === "RECIPIENT" ? "RECIPIENT" : "SENDER",
       },
     });
 

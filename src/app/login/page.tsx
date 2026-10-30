@@ -482,9 +482,12 @@ export default function LoginPage() {
           <h2 className="text-2xl font-bold tracking-tight text-text-primary">
             FortressShare Exchange
           </h2>
-          <p className="text-xs text-text-secondary mt-1 uppercase tracking-wider font-mono text-[10px]">
-            Cryptographic Authentication
-          </p>
+          <div className="flex items-center gap-1.5 mt-1.5">
+            <span className="px-2 py-0.5 rounded-full bg-primary-indigo/20 border border-primary-indigo/40 text-[10px] font-mono text-primary-indigo font-bold uppercase tracking-wider">
+              Sender Portal
+            </span>
+            <span className="text-text-secondary text-[11px] font-mono">• Cryptographic Origin</span>
+          </div>
         </div>
 
         {/* Dynamic Alerts */}
@@ -1056,6 +1059,17 @@ export default function LoginPage() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Quick Portal Switcher */}
+        <div className="mt-6 pt-5 border-t border-border-primary/60 text-center text-xs text-text-secondary">
+          <span>Are you a recipient accessing a shared file? </span>
+          <a
+            href="/recovery/login"
+            className="text-accent-cyan font-semibold hover:underline inline-flex items-center gap-1"
+          >
+            Go to Recovery Portal →
+          </a>
+        </div>
 
       </motion.div>
     </div>

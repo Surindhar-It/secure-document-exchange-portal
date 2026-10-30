@@ -6,6 +6,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "fortress-share-super-secret-key-10
 export interface AuthenticatedUser {
   id: string;
   email: string;
+  role?: string; // "SENDER" | "RECIPIENT" | "ADMIN"
 }
 
 // 1. Sign JWT Token

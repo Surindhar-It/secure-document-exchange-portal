@@ -142,11 +142,17 @@ export async function POST(req: NextRequest) {
     });
 
     // Sign JWT and set HTTP-only cookie
-    const token = signJwtToken({ id: user.id, email: user.email });
+    const token = signJwtToken({ id: user.id, email: user.email, role: user.role || "SENDER" });
     const response = NextResponse.json({
       success: true,
       message: "Sign-in verified successfully. Welcome back!",
-      user: { id: user.id, email: user.email, phoneNumber: user.phoneNumber, publicKey: user.publicKey },
+      user: {
+        id: user.id,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        publicKey: user.publicKey,
+        role: user.role || "SENDER",
+      },
     });
 
     response.cookies.set("token", token, {

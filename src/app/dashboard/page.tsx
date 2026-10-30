@@ -146,12 +146,14 @@ export default function DashboardPage() {
         setUserProfile({
           email: filesData.user.email,
           mfaEnabled: filesData.user.mfaEnabled,
+          role: filesData.user.role || "SENDER",
         });
       } else {
         const emailLog = auditData.logs?.find((l: any) => l.userEmail);
         setUserProfile({
           email: emailLog ? emailLog.userEmail : "user@fortressshare.internal",
           mfaEnabled: false,
+          role: "SENDER",
         });
       }
     } catch (err) {
@@ -700,8 +702,13 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2.5 px-2">
             <Shield className="w-5 h-5 text-indigo-500" />
             <div>
-              <span className="font-bold tracking-tight text-sm text-text-primary">SecureDocX</span>
-              <p className="text-[9px] text-text-secondary font-mono">Secure. Share. Verify.</p>
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold tracking-tight text-sm text-text-primary">SecureDocX</span>
+                <span className="px-1.5 py-0.2 rounded bg-indigo-500/20 border border-indigo-500/30 text-[9px] font-mono text-indigo-400 font-semibold uppercase">
+                  Sender
+                </span>
+              </div>
+              <p className="text-[9px] text-text-secondary font-mono">Originator &amp; Encryption Vault</p>
             </div>
           </div>
 
@@ -736,16 +743,27 @@ export default function DashboardPage() {
             })}
 
             <a
-              href="/recovery"
-              target="_blank"
-              rel="noopener noreferrer"
+              href="/recovery/dashboard"
               className="w-full flex items-center justify-between px-3.5 py-2.5 text-xs font-medium rounded-xl font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all mt-4"
             >
               <div className="flex items-center gap-2.5">
                 <FileCheck className="w-4 h-4" />
-                <span>Recovery Portal</span>
+                <span>Recipient Vault</span>
               </div>
               <ExternalLink className="w-3 h-3 text-emerald-400" />
+            </a>
+
+            <a
+              href="/recovery"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full flex items-center justify-between px-3.5 py-2 text-xs font-medium rounded-xl font-mono text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all mt-1"
+            >
+              <div className="flex items-center gap-2.5">
+                <Unlock className="w-4 h-4" />
+                <span>Decryptor Tool</span>
+              </div>
+              <ExternalLink className="w-3 h-3 text-cyan-400" />
             </a>
           </nav>
         </div>
